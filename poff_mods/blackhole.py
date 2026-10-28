@@ -173,25 +173,63 @@ class BlackholeModule:
             messagebox.showerror("添加失败", err)
 
     # ---------------- 悬浮面板 ----------------
+    def _primary_workarea(self):
+        """返回主屏工作区矩形 (left, top, right, bottom)。
+
+        Windows 上用 ctypes 读 SystemParametersInfo(SPI_GETWORKAREA)，
+        这是"排除任务栏 + 排除其它屏虚拟空间"之后的**真实主屏可用区域**。
+        非 Windows 上回退 Tk 的 winfo_screenwidth/height（在单屏 Mac 上够用）。
+
+        关键：多屏 Windows 下 winfo_screenwidth() 只给主屏尺寸，
+        但虚拟屏幕可能向右延伸（主屏 1920 + 副屏 1920 → 虚拟宽 3840），
+        如果贴边时用 winfo_screenwidth() 会把面板钉在虚拟屏幕 1920 位置，
+        刚好是主屏和副屏的分界线，出现：
+          a) 面板一半溢出副屏（被副屏桌面盖住）
+          b) 主屏上原本被面板盖住的位置变成黑色残影条
+        用 SPI_GETWORKAREA 取到的 right 才是真正要贴的主屏右边界。
+        """
+        try:
+            import ctypes
+            from ctypes import wintypes
+            if os.name == "nt":
+                SPI_GETWORKAREA = 48
+                rect = wintypes.RECT()
+                ok = ctypes.windll.user32.SystemParametersInfoW(
+                    SPI_GETWORKAREA, 0, ctypes.byref(rect), 0)
+                if ok:
+                    # rect.left/top 可能不是 0（任务栏在左/上时），
+                    # 黑洞面板贴右边，所以只用 right/bottom
+                    return rect.left, rect.top, rect.right, rect.bottom
+        except Exception:
+            pass
+        # 回退：非 Windows 或 ctypes 失败
+        sw = self.app.root.winfo_screenwidth()
+        sh = self.app.root.winfo_screenheight()
+        return 0, 0, sw, sh
+
     def _screen_geo(self):
-        root = self.app.root
-        sw = root.winfo_screenwidth()
-        sh = root.winfo_screenheight()
-        height = max(360, int(sh * 0.62))
-        y = max(80, (sh - height) // 2 - 40)
-        return sw, sh, height, y
+        """返回 (wa_right, wa_top, wa_bottom, panel_height, panel_y)。
+
+        所有坐标基于**主屏工作区**（排除任务栏 + 排除其它屏虚拟空间）。
+        """
+        _, wa_top, wa_right, wa_bottom = self._primary_workarea()
+        wa_h = wa_bottom - wa_top
+        height = max(360, int(wa_h * 0.62))
+        y = max(60, wa_top + (wa_h - height) // 2 - 40)
+        return wa_right, wa_top, wa_bottom, height, y
 
     def ensure_panel(self):
         if self.panel is not None and self._alive():
             return
-        sw, sh, height, y = self._screen_geo()
+        wa_right, _, _, height, y = self._screen_geo()
         panel = tk.Toplevel(self.app.root)
         self.panel = panel
         panel.overrideredirect(True)
         panel.configure(bg="#0B1220")
         if self.app.cfg.get("blackhole", {}).get("topmost", True):
             panel.attributes("-topmost", True)
-        panel.geometry(f"{PANEL_W}x{height}+{sw - STRIP_W}+{y}")
+        # 贴在主屏工作区右边界，只露出 14px 粘边带
+        panel.geometry(f"{PANEL_W}x{height}+{wa_right - STRIP_W}+{y}")
 
         header = tk.Frame(panel, bg="#0B1220", height=46)
         header.pack(fill="x")
@@ -235,9 +273,10 @@ class BlackholeModule:
         self._drag_offset = event.y_root - self.panel.winfo_y()
 
     def _drag_move(self, event):
-        sw, sh, height, _ = self._screen_geo()
-        y = max(0, min(sh - height, event.y_root - self._drag_offset))
-        x = self.panel.winfo_x()
+        wa_right, wa_top, wa_bottom, height, _ = self._screen_geo()
+        y = max(wa_top, min(wa_bottom - height, event.y_root - self._drag_offset))
+        # x 锁定在主屏右边界以内，防止拖到副屏
+        x = min(wa_right - STRIP_W, self.panel.winfo_x())
         self.panel.geometry(f"{PANEL_W}x{height}+{x}+{y}")
 
     def expand(self):
@@ -245,7 +284,8 @@ class BlackholeModule:
             return
         if self._expanded or self._animating:
             return
-        self._slide(to=sw_expanded(self.app.root.winfo_screenwidth()), expand=True)
+        wa_right, _, _, _, _ = self._screen_geo()
+        self._slide(to=wa_right - PANEL_W, expand=True)
 
     def collapse(self, force=False):
         if not self._alive():
@@ -254,7 +294,8 @@ class BlackholeModule:
             return
         if not self._expanded or self._animating:
             return
-        self._slide(to=self.app.root.winfo_screenwidth() - STRIP_W, expand=False)
+        wa_right, _, _, _, _ = self._screen_geo()
+        self._slide(to=wa_right - STRIP_W, expand=False)
 
     def _slide(self, to, expand):
         self._animating = True
@@ -267,7 +308,7 @@ class BlackholeModule:
                 self._animating = False
                 return
             x = int(start + step * i)
-            _, _, height, _ = self._screen_geo()
+            _, _, _, height, _ = self._screen_geo()
             self.panel.geometry(f"{PANEL_W}x{height}+{x}+{self.panel.winfo_y()}")
             if i < steps:
                 self.panel.after(12, lambda: tick(i + 1))
@@ -344,8 +385,8 @@ class BlackholeModule:
             if over and not self._expanded:
                 self.expand()
             elif (not over) and self._expanded and auto and not self._animating:
-                sw = self.app.root.winfo_screenwidth()
-                if px < sw - STRIP_W - 4:
+                wa_right, _, _, _, _ = self._screen_geo()
+                if px < wa_right - STRIP_W - 4:   # 鼠标已经完全离开右侧缓冲区
                     self.collapse()
         except tk.TclError:
             return
@@ -478,5 +519,4 @@ class BlackholeModule:
                 pass
 
 
-def sw_expanded(screen_width):
-    return screen_width - PANEL_W
+# （旧 sw_expanded 已删除，expand/collapse 现在统一通过 _screen_geo 取主屏工作区右边界）
