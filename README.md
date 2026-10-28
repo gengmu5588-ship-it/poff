@@ -27,10 +27,6 @@
 | **托盘常驻 / 开机自启** | 关闭窗口不退出，登录后自动在托盘常驻 | ✅ | ✅ |
 | **配置持久化** | 主机列表、模块开关、目录设置自动保存，重启即恢复 | ✅ | ✅ |
 
-### 跨屏键鼠漫游架构
-
-![KVM 架构示意](docs/images/kvm-architecture.jpeg)
-
 ---
 
 ## 快速开始
@@ -66,8 +62,6 @@ chmod +x build_mac.sh make_dmg.sh run_dev_mac.sh
 前置条件：macOS 12+、[python.org](https://www.python.org/downloads/macos/) 的 Python 3.12（自带兼容 Tk）、`xcode-select --install` 安装的 Command Line Tools。
 
 详细说明见 [macos/README_MAC.md](macos/README_MAC.md) 与 [macos/PORTING_NOTES.md](macos/PORTING_NOTES.md)。
-
-![macOS 打包流程](docs/images/macos-build-flow.png)
 
 ---
 
@@ -192,8 +186,7 @@ KVM 跨平台兼容：网络层统一使用 Windows Set-1 扫描码，macOS 端�
 ├── docs/
 │   ├── POFF V1.0 局域网多主机同步关机工具 · 需求文档与代码样板.docx
 │   ├── POFF V2.0 功能说明文档与代码样板.docx
-│   ├── POFF V2.0 新增功能需求整理与可行性方案.docx
-│   └── images/
+│   └── POFF V2.0 新增功能需求整理与可行性方案.docx
 ├── POFF.spec                # Windows 单文件 exe 打包配置
 ├── build_windows.ps1        # Windows 一键构建脚本
 ├── requirements.txt         # Windows 依赖
