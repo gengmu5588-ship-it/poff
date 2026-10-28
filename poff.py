@@ -45,10 +45,12 @@ from tkinter import ttk, messagebox, filedialog
 from poff_mods import system_tools as st
 from poff_mods import transfer
 from poff_mods.blackhole import BlackholeModule
-from poff_mods.kvm import RoamModule, handle_kvm_session
+from poff_mods.kvm import RoamModule, handle_kvm_session, KVM_CTRL
 from poff_mods.mobidrop import MOBI_PORT, MobiDropModule
 from poff_mods.panels import BrightnessModule, TabletModule
+from poff_mods.recorder import RecorderModule
 from poff_mods.screenshot import ScreenshotModule
+from poff_mods.screenshare import ScreenShareModule, SHARE_HTTP_PORT
 
 try:
     from tkinterdnd2 import TkinterDnD
@@ -60,7 +62,7 @@ except Exception:
 # ====================================================
 APP_NAME = "POFF V2.2 局域网多主机控制"
 APP_TITLE = "POFF V2.2"
-VERSION = "2.2.3"
+VERSION = "2.3.0"
 CODE_APP_TAG = "poff"
 CODE_VERSION = 2
 
@@ -453,6 +455,8 @@ class PoffApp:
         self.cfg = load_cfg()
         self.screenshot_dir = resolve_dir(self.cfg, "screenshot",
                                           os.path.join("Pictures", "POFF 截图"))
+        self.recording_dir = resolve_dir(self.cfg, "recording",
+                                         os.path.join("Videos", "POFF 录屏"))
         self.receive_dir = resolve_dir(self.cfg, "receive",
                                        os.path.join("Downloads", "POFF 接收"))
         self.peer_list = load_saved_peers(self.local_ip)
@@ -480,10 +484,12 @@ class PoffApp:
         # 模块实例先于界面创建，便于各标签页构建
         self.mobi = MobiDropModule(self)
         self.screenshot = ScreenshotModule(self)
+        self.recorder = RecorderModule(self)
         self.blackhole = BlackholeModule(self)
         self.brightness = BrightnessModule(self)
         self.tablet = TabletModule(self)
         self.roam = RoamModule(self)
+        self.screenshare = ScreenShareModule(self)
 
         self._build_ui()
         self.refresh_peer_ui()
@@ -529,7 +535,8 @@ class PoffApp:
         if not st.is_admin():
             return
         ok = True
-        for proto, port in (("TCP", TCP_PORT), ("UDP", TCP_PORT), ("TCP", MOBI_PORT)):
+        for proto, port in (("TCP", TCP_PORT), ("UDP", TCP_PORT),
+                            ("TCP", MOBI_PORT), ("TCP", SHARE_HTTP_PORT)):
             st.run_hidden(["netsh", "advfirewall", "firewall", "delete", "rule",
                            f"name=POFF LAN {proto} {port}"], timeout=15)
             proc = st.run_hidden(
@@ -779,13 +786,24 @@ class PoffApp:
         grid = ttk.Frame(card, style="Card.TFrame")
         grid.pack(fill="x", pady=(10, 0))
         mods = self.cfg.get("modules", {})
-        labels = [("screenshot", "屏幕截屏"), ("brightness", "亮度控制"),
-                  ("tablet", "平板副屏"), ("roam", "键鼠漫游"), ("blackhole", "黑洞投递")]
+        labels = [
+            # row=0：原 5 个 + 新增 1 个（6 个）
+            ("screenshot", "屏幕截屏"), ("recorder", "录屏录音"),
+            ("brightness", "亮度控制"), ("tablet", "平板副屏"),
+            ("roam", "键鼠漫游"), ("screenshare", "屏幕共享"),
+            # row=1：黑洞投递（单独一行，因为上面 6 个排满一行会挤）
+            ("blackhole", "黑洞投递"),
+        ]
+        # 两列布局：第一行 6 个（row=0），第二行 1 个（row=1），每列 padx=18
+        COLS_PER_ROW = 6
         for i, (key, label) in enumerate(labels):
+            row = 0 if i < COLS_PER_ROW else 1
+            col = i if row == 0 else 0
             var = tk.BooleanVar(value=bool(mods.get(key, True)))
             self.mod_vars[key] = var
             cell = ttk.Frame(grid, style="Card.TFrame")
-            cell.grid(row=0, column=i, sticky="nw", padx=(0, 22))
+            cell.grid(row=row, column=col, sticky="nw", padx=(0, 18),
+                      pady=(0, 8) if row == 1 else 0)
             FlatToggle(cell, variable=var,
                        on_change=lambda k=key: self.on_module_toggle(k)).grid(row=0, column=0, sticky="w")
             ttk.Label(cell, text=label, style="Muted.TLabel",
@@ -794,7 +812,7 @@ class PoffApp:
         ttk.Label(card,
                   text="全局热键：Alt+Q 选区截屏　Ctrl+Shift+F 全屏截屏　"
                        "Ctrl+Shift+H 黑洞面板　Ctrl+Shift+L 漫游锁定（漫游开启后生效）",
-                  style="Muted.TLabel", wraplength=700).pack(anchor="w", pady=(8, 0))
+                  style="Muted.TLabel", wraplength=700).pack(anchor="w", pady=(4, 0))
 
     def _build_tabs(self, parent):
         self.nb = ttk.Notebook(parent)
@@ -822,10 +840,14 @@ class PoffApp:
 
         self.tab_device = make_tab("设备操作", self._build_device_tab)
         self.tab_shot = make_tab("截屏", self.screenshot.build_tab)
+        # 录屏 / 录音 追加到截屏 Tab 后面（同一个 Tab 内，不新起一页）
+        self.tab_rec = make_tab("录屏录音", self.recorder.build_panel)
         self.tab_hole = make_tab("黑洞投递", self.blackhole.build_tab)
         self.tab_bright = make_tab("亮度", self.brightness.build_tab)
         self.tab_tablet = make_tab("平板副屏", self.tablet.build_tab)
         self.tab_roam = make_tab("键鼠漫游", self.roam.build_tab)
+        # 屏幕共享 追加到键鼠漫游 Tab 后面
+        self.tab_share = make_tab("屏幕共享", self.screenshare.build_panel)
         self.root.bind_all("<MouseWheel>", self._on_tab_wheel)
 
     def _on_tab_wheel(self, event):
@@ -1813,15 +1835,21 @@ class PoffApp:
             self.blackhole.set_enabled(on)
             if on and self.cfg.get("blackhole", {}).get("show", True):
                 self.blackhole.ensure_panel()
+        elif key == "recorder":
+            self.recorder.set_enabled(self.mod_vars[key].get())
+        elif key == "screenshare":
+            self.screenshare.set_enabled(self.mod_vars[key].get())
         self.log(f"{'已开启' if self.mod_vars[key].get() else '已关闭'}模块：{key}", "info")
 
     def _apply_module_states(self):
         shot_on = self.mod_vars["screenshot"].get()
         self.screenshot.set_enabled(shot_on)
+        self.recorder.set_enabled(self.mod_vars.get("recorder", True))
         self.brightness.set_enabled(self.mod_vars["brightness"].get())
         self.tablet.set_enabled(self.mod_vars["tablet"].get())
         self.roam.set_enabled(self.mod_vars["roam"].get())
         self.blackhole.set_enabled(self.mod_vars["blackhole"].get())
+        self.screenshare.set_enabled(self.mod_vars.get("screenshare", True))
         self._init_hotkeys()
 
     def save_cfg(self):

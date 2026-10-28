@@ -26,6 +26,7 @@ KVM_OK = "KVM_OK"
 KVM_M = "KVM_M"
 KVM_K = "KVM_K"
 KVM_BYE = "KVM_BYE"
+KVM_CTRL = "KVM_CTRL"    # 扩展控制码（screenshare / 未来可扩展）
 
 DEFAULT_TCP_PORT = 17890
 CONNECT_TIMEOUT = 2.5
@@ -75,6 +76,8 @@ def handle_kvm_session(conn, f, app):
             _inject_mouse_line(text[len(KVM_M) + 1:], w, h)
         elif text.startswith(KVM_K + " "):
             _inject_key_line(text[len(KVM_K) + 1:])
+        elif text.startswith(KVM_CTRL + " "):
+            _handle_ctrl(app, text[len(KVM_CTRL) + 1:])
         # 畸形行忽略，保证会话健壮
 
     try:
@@ -282,6 +285,22 @@ class RoamEngine(threading.Thread):
 
     def stop(self):
         self._stop_flag.set()
+
+    # ---------------- 扩展控制码（screenshare 等） ----------------
+    def send_ctrl(self, payload):
+        """向被控端发送扩展控制码（不阻塞，断线静默失败）。"""
+        sock = self._sock
+        if sock is None:
+            return False
+        try:
+            line = f"{KVM_CTRL} {json.dumps(payload, ensure_ascii=False)}\n"
+            sock.sendall(line.encode("utf-8"))
+            return True
+        except Exception:
+            return False
+
+    def is_connected(self):
+        return self._sock is not None
 
     # ---------------- 边缘判定 ----------------
     def _at_trigger_edge(self, x, y, cfg):
@@ -861,3 +880,70 @@ class RoamModule:
                 eng.join(timeout=2.0)
             except Exception:
                 pass
+
+    # ---------------- 屏幕共享控制码 ----------------
+    def is_connected(self, _target=None):
+        """KVM 会话是否已建立（对端已进入漫游被控端）。"""
+        return (self.engine is not None
+                and self.engine.is_alive()
+                and self.engine.is_connected())
+
+    def send_ctrl(self, payload):
+        eng = self.engine
+        if eng is None:
+            return False
+        return eng.send_ctrl(payload)
+
+    def send_share_start(self, _target, http_port=17892):
+        """通知 B 端接收屏幕共享（B 会自动创建接收窗口）。"""
+        from .screenshare import SHARE_HTTP_PORT
+        url = f"http://{self.app.local_ip}:{SHARE_HTTP_PORT}/screenshare"
+        return self.send_ctrl({"type": "screenshare_start", "url": url})
+
+    def send_share_stop(self, _target):
+        """通知 B 端关闭屏幕共享接收窗口。"""
+        return self.send_ctrl({"type": "screenshare_stop"})
+
+
+def _handle_ctrl(app, payload_line):
+    """被控端处理 KVM_CTRL 控制码（跑在被控端 handle_kvm_session 线程里）。
+
+    所有 UI 相关操作都走 app.ui_call 派发回主线程，避免跨线程直接操作 tk。
+    """
+    try:
+        payload = json.loads(payload_line)
+    except Exception:
+        return
+    t = payload.get("type")
+    if t == "screenshare_start":
+        url = payload.get("url", "")
+        app.ui_call(_start_screen_receiver, app, url)
+    elif t == "screenshare_stop":
+        app.ui_call(_stop_screen_receiver, app)
+
+
+def _start_screen_receiver(app, url):
+    try:
+        from .screenshare import ScreenReceiver
+        # 同一个 app 只保留一个 ScreenReceiver（后发的覆盖）
+        if getattr(app, "_screen_receiver", None) is not None:
+            try:
+                app._screen_receiver.close()
+            except Exception:
+                pass
+        app._screen_receiver = ScreenReceiver(
+            app, url, peer_ip=url.split("//")[1].split(":")[0] if "//" in url else "")
+        app.log(f"收到屏幕共享邀请：{url}", "ok")
+    except Exception as e:
+        app.log(f"打开屏幕共享接收窗口失败：{e}", "err")
+
+
+def _stop_screen_receiver(app):
+    r = getattr(app, "_screen_receiver", None)
+    if r is None:
+        return
+    try:
+        r.close()
+    except Exception:
+        pass
+    app._screen_receiver = None
