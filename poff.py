@@ -96,6 +96,12 @@ USER_APP_PROCESS_NAMES = [
 ]
 
 # ===================== 视觉规范 =====================
+# iOS 开关色板
+IOS_SW_ON = "#34C759"        # Apple system green
+IOS_SW_OFF = "#E5E5EA"       # Apple off gray
+IOS_SW_THUMB = "#FFFFFF"
+IOS_SW_FRAME = "#D1D1D6"     # 开关外边框（关状态）
+
 BG = "#F2F5FA"
 CARD = "#FFFFFF"
 SOFT = "#F7F9FC"
@@ -120,6 +126,131 @@ def get_data_dir():
     except OSError:
         pass
     return path
+
+
+class IOSwitch(tk.Canvas):
+    """iOS 风格开关：圆角滑块 + 圆形 thumb，点击切换 BooleanVar。"""
+
+    W = 51                  # 轨道宽
+    H = 31                  # 轨道高
+    PAD = 2                 # 轨道内边距
+    ANIM_MS = 110
+
+    def __init__(self, master, variable, on_change=None, **kw):
+        self._var = variable
+        self._on_change = on_change
+        self._anim_job = None
+        self._thumb_x = None          # 当前 thumb 中心 x（动画过程中使用）
+
+        kw.setdefault('width', self.W)
+        kw.setdefault('height', self.H)
+        kw.setdefault('highlightthickness', 0)
+        kw.setdefault('bd', 0)
+        kw.setdefault('bg', CARD)
+        super().__init__(master, **kw)
+
+        self._radius = self.H // 2
+        self._thumb_r = self._radius - self.PAD
+        self._off_x = self._radius          # thumb 关状态中心 x
+        self._on_x = self.W - self._radius  # thumb 开状态中心 x
+        self._thumb_y = self.H // 2
+
+        # 圆角轨道：左半圆 + 中间矩形 + 右半圆
+        self._body = [
+            self.create_oval(0, 0, self.H, self.H, outline='', tags='body'),
+            self.create_rectangle(self._radius, 0, self.W - self._radius, self.H,
+                                   outline='', tags='body'),
+            self.create_oval(self.W - self.H, 0, self.W, self.H, outline='', tags='body'),
+        ]
+        # 边框（仅关状态可见，开状态绿色作为填充视觉上已足够）
+        self._frame = self.create_oval(0, 0, self.H, self.H, outline=IOS_SW_FRAME,
+                                       width=1, tags='frame_l')
+        self._frame2 = self.create_rectangle(self._radius, 0, self.W - self._radius, self.H,
+                                             outline='', tags='frame_m')
+        self._frame3 = self.create_oval(self.W - self.H, 0, self.W, self.H,
+                                        outline=IOS_SW_FRAME, width=1, tags='frame_r')
+
+        # thumb 阴影 + 本体（阴影放 thumb 底下，切换时一起移动）
+        self._shadow = self.create_oval(0, 0, 1, 1, fill='rgba(0,0,0,0.18)', outline='')
+        try:
+            self.itemconfigure(self._shadow, fill='#B3B3B3')  # Tk 不支持 rgba，用接近的
+        except tk.TclError:
+            self.itemconfigure(self._shadow, fill='#C7C7CC')
+        self._thumb = self.create_oval(0, 0, 1, 1, fill=IOS_SW_THUMB, outline='')
+
+        # 点击 / 悬停
+        self.bind("<Button-1>", self._on_click)
+        self.bind("<Enter>", lambda e: self.config(cursor="hand2"))
+        self.bind("<Leave>", lambda e: self.config(cursor=""))
+
+        self._var.trace_add('write', lambda *a: self._render(animate=True))
+        self._render(animate=False)
+
+    # ---- 内部 ----
+    def _thumb_geom(self, cx):
+        r = self._thumb_r
+        cy = self._thumb_y
+        return cx - r, cy - r, cx + r, cy + r
+
+    def _target_x(self):
+        return self._on_x if bool(self._var.get()) else self._off_x
+
+    def _render(self, animate):
+        on = bool(self._var.get())
+        body_fill = IOS_SW_ON if on else IOS_SW_OFF
+        for iid in self._body:
+            self.itemconfigure(iid, fill=body_fill)
+        # 边框：开状态时被绿色填充盖住（视觉上就是绿轨道）
+        frame_color = IOS_SW_ON if on else IOS_SW_FRAME
+        self.itemconfigure(self._frame, outline=frame_color)
+        self.itemconfigure(self._frame3, outline=frame_color)
+
+        target = self._target_x()
+        if not animate or self._thumb_x is None:
+            self._thumb_x = target
+            self._place_thumb(target)
+            return
+
+        self._animate_to(target)
+
+    def _place_thumb(self, cx):
+        x0, y0, x1, y1 = self._thumb_geom(cx)
+        self.coords(self._thumb, x0, y0, x1, y1)
+        # 阴影轻微下偏移
+        self.coords(self._shadow, x0 + 0, y0 + 1, x1 + 0, y1 + 1)
+
+    def _animate_to(self, target):
+        if self._anim_job is not None:
+            self.after_cancel(self._anim_job)
+        start = self._thumb_x
+        delta = target - start
+        steps = 8
+        step_ms = max(6, self.ANIM_MS // steps)
+        self._anim_job = None
+
+        def step(i):
+            if i >= steps:
+                self._thumb_x = target
+                self._place_thumb(target)
+                self._anim_job = None
+                return
+            # ease-out（二次方）
+            t = i / steps
+            eased = 1 - (1 - t) ** 2
+            cx = start + delta * eased
+            self._thumb_x = cx
+            self._place_thumb(cx)
+            self._anim_job = self.after(step_ms, lambda: step(i + 1))
+
+        step(0)
+
+    def _on_click(self, _event=None):
+        self._var.set(not bool(self._var.get()))
+        if self._on_change is not None:
+            try:
+                self._on_change()
+            except Exception:
+                pass
 
 
 PEERS_FILE = os.path.join(get_data_dir(), "peers.json")
@@ -627,16 +758,19 @@ class PoffApp:
                   style="Muted.TLabel").pack(side="left", padx=10)
 
         grid = ttk.Frame(card, style="Card.TFrame")
-        grid.pack(fill="x", pady=(8, 0))
+        grid.pack(fill="x", pady=(10, 0))
         mods = self.cfg.get("modules", {})
         labels = [("screenshot", "屏幕截屏"), ("brightness", "亮度控制"),
                   ("tablet", "平板副屏"), ("roam", "键鼠漫游"), ("blackhole", "黑洞投递")]
         for i, (key, label) in enumerate(labels):
             var = tk.BooleanVar(value=bool(mods.get(key, True)))
             self.mod_vars[key] = var
-            ttk.Checkbutton(grid, text=label, variable=var,
-                            command=lambda k=key: self.on_module_toggle(k)).grid(
-                row=0, column=i, sticky="w", padx=(0, 22))
+            cell = ttk.Frame(grid, style="Card.TFrame")
+            cell.grid(row=0, column=i, sticky="nw", padx=(0, 28))
+            IOSwitch(cell, variable=var,
+                     on_change=lambda k=key: self.on_module_toggle(k)).grid(row=0, column=0, sticky="w")
+            ttk.Label(cell, text=label, style="Muted.TLabel",
+                      font=("PingFang SC", 8)).grid(row=1, column=0, sticky="w", pady=(4, 0))
 
         ttk.Label(card,
                   text="全局热键：Ctrl+Shift+F 全屏截屏　Ctrl+Shift+S 选区截屏　"
@@ -1756,6 +1890,7 @@ class PoffApp:
         text.pack(fill="both", expand=True, padx=12, pady=12)
         content = (
             "POFF V2.2 使用说明\n\n"
+            "如遇问题或需要定制功能，欢迎联系开发者微信：shot2021\n\n"
             "一、配对\n"
             "  两台电脑都运行 POFF，任一侧点击「生成本机串码」并复制给对方；\n"
             "  对方粘贴后点「添加主机」即可。列表会自动保存，下次无需重复添加。\n"
