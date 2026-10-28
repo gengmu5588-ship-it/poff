@@ -60,7 +60,7 @@ except Exception:
 # ====================================================
 APP_NAME = "POFF V2.2 局域网多主机控制"
 APP_TITLE = "POFF V2.2"
-VERSION = "2.2.2"
+VERSION = "2.2.3"
 CODE_APP_TAG = "poff"
 CODE_VERSION = 2
 
@@ -792,7 +792,7 @@ class PoffApp:
                       font=("PingFang SC", 8)).grid(row=1, column=0, sticky="w", pady=(6, 0))
 
         ttk.Label(card,
-                  text="全局热键：Ctrl+Shift+F 全屏截屏　Ctrl+Shift+S 选区截屏　"
+                  text="全局热键：Alt+Q 选区截屏　Ctrl+Shift+F 全屏截屏　"
                        "Ctrl+Shift+H 黑洞面板　Ctrl+Shift+L 漫游锁定（漫游开启后生效）",
                   style="Muted.TLabel", wraplength=700).pack(anchor="w", pady=(8, 0))
 
@@ -1838,7 +1838,8 @@ class PoffApp:
         bindings = {}
         if self.mod_vars.get("screenshot") and self.mod_vars["screenshot"].get():
             bindings["shot_full"] = (st.MOD_CONTROL | st.MOD_SHIFT, 0x46)   # F
-            bindings["shot_area"] = (st.MOD_CONTROL | st.MOD_SHIFT, 0x53)   # S
+            bindings["shot_area"] = (st.MOD_ALT, 0x51)                       # Alt+Q
+            bindings["shot_area2"] = (st.MOD_CONTROL | st.MOD_SHIFT, 0x53)   # S（旧习惯保留）
         if self.mod_vars.get("blackhole") and self.mod_vars["blackhole"].get():
             bindings["blackhole"] = (st.MOD_CONTROL | st.MOD_SHIFT, 0x48)   # H
         if self.mod_vars.get("roam") and self.mod_vars["roam"].get():
@@ -1867,7 +1868,7 @@ class PoffApp:
         if name == "shot_full":
             if self.mod_vars["screenshot"].get():
                 self.screenshot.capture_full()
-        elif name == "shot_area":
+        elif name in ("shot_area", "shot_area2"):
             if self.mod_vars["screenshot"].get():
                 self.screenshot.capture_region()
         elif name == "blackhole":
@@ -1920,8 +1921,11 @@ class PoffApp:
             "  关机命令使用系统优雅关机（不带 /f），不会强杀进程，但对方若有未保存文档\n"
             "  仍会弹出保存对话框，需要有人在那台机器上处理。手机设备不参与关机。\n\n"
             "三、截屏\n"
-            "  Ctrl+Shift+F 全屏截屏，Ctrl+Shift+S 选区截屏；预览中可另存或直接发送。\n"
-            "  这些是全局热键，会占用对应组合键；关闭截屏模块即可释放。\n\n"
+            "  Alt+Q 选区截屏（Ctrl+Shift+S 同样可用），Ctrl+Shift+F 全屏截屏。\n"
+            "  截完立即自动保存到截图目录，随后打开编辑窗口：\n"
+            "  画笔 / 矩形 / 箭头 / 马赛克，可撤销（Ctrl+Z），可复制（Ctrl+C）；\n"
+            "  标注直接写回同一张已保存的图片，也可另存或发送到其他主机。\n"
+            "  Alt+Q 是全局热键，关闭截屏模块即可释放该组合键。\n\n"
             "四、黑洞投递\n"
             "  鼠标移到屏幕右侧细条展开悬浮面板，把文件拖到主机条目即可投递；\n"
             "  对方文件保存在接收目录，并弹窗提示。\n\n"
