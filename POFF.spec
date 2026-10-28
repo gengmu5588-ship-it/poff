@@ -1,11 +1,14 @@
 # -*- mode: python ; coding: utf-8 -*-
 """POFF Windows 单文件打包配置（PyInstaller 6.x）。
 
-用法：
+产物名由环境变量 POFF_NAME 控制，默认 Poff.exe：
+    $env:POFF_NAME='Poff-2.2.1'; pyinstaller --clean --noconfirm POFF.spec
+    # → dist/Poff-2.2.1.exe
+不传时回退到 Poff：
     pyinstaller --clean --noconfirm POFF.spec
-产物：
-    dist/Poff.exe
+    # → dist/Poff.exe
 """
+import os
 from PyInstaller.utils.hooks import collect_all, collect_submodules
 
 hiddenimports = [
@@ -51,7 +54,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='Poff',
+    name=os.environ.get('POFF_NAME', 'Poff'),
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
