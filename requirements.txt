@@ -1,0 +1,8 @@
+# POFF Windows 端运行依赖（tkinter 随 CPython 官方安装包自带）
+Pillow>=10.4,<13
+qrcode[pil]>=7.4,<9
+pystray>=0.19.5,<1
+tkinterdnd2>=0.4.2,<1
+
+# 打包依赖（仅开发构建时需要）
+pyinstaller>=6.10,<7

@@ -1,0 +1,15 @@
+# 统一换行，避免 macOS 上的 shell 脚本因 CRLF 无法执行
+* text=auto eol=lf
+*.sh text eol=lf
+*.ps1 text eol=crlf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# 二进制
+*.ico binary
+*.png binary
+*.jpeg binary
+*.jpg binary
+*.docx binary
+*.zip binary
+*.exe binary

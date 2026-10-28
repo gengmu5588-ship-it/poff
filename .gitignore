@@ -1,0 +1,33 @@
+# Python 缓存
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.venv-mac/
+.venv-macos/
+venv/
+
+# PyInstaller 构建产物
+build/
+dist/
+
+# 发布用二进制（请通过 GitHub Releases 分发）
+*.exe
+*.dmg
+*.pkg
+*.zip
+
+# 运行时状态与日志
+debug.log
+*.log
+peers.json
+config.json
+
+# 编辑器 / 系统
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# 原始导出目录（已整理为 macos/）
+POFF-macOS-local-complete-v2/
