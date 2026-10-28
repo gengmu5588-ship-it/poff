@@ -62,7 +62,7 @@ except Exception:
 # ====================================================
 APP_NAME = "POFF V2.2 局域网多主机控制"
 APP_TITLE = "POFF V2.2"
-VERSION = "2.3.0"
+VERSION = "2.3.1"
 CODE_APP_TAG = "poff"
 CODE_VERSION = 2
 
@@ -547,7 +547,7 @@ class PoffApp:
             if proc is None or proc.returncode != 0:
                 ok = False
         if ok:
-            self.ui_call(self.log, "防火墙已自动放行 17890 / 17891 端口（管理员模式）", "ok")
+            self.ui_call(self.log, "防火墙已自动放行 17890 / 17891 / 17892 端口（管理员模式）", "ok")
         else:
             self.ui_call(self.log, "防火墙自动放行失败，请手动检查防火墙设置", "warn")
 
@@ -670,9 +670,11 @@ class PoffApp:
         right.columnconfigure(0, weight=1)
 
         self._build_switches(right)
+        # 先建左侧设备列表（peer_box），再建右侧 Tab：
+        # 屏幕共享等面板构建时会读取 peer_box / 主机列表
+        self._build_left(left)
         self._build_tabs(right)
         self._build_log(body)
-        self._build_left(left)
 
     def _build_header(self):
         header = tk.Frame(self.root, bg=HEADER_BG, height=66)
@@ -991,11 +993,14 @@ class PoffApp:
             return list(self.peer_list.items())
 
     def selected_ip(self):
-        sel = self.peer_box.selection()
+        peer_box = getattr(self, "peer_box", None)
+        if peer_box is None:
+            return None
+        sel = peer_box.selection()
         if not sel:
             return None
         try:
-            return self.peer_box.item(sel[0], "values")[0]
+            return peer_box.item(sel[0], "values")[0]
         except Exception:
             return None
 
@@ -1042,6 +1047,10 @@ class PoffApp:
         self.on_select_change()
         try:
             self.blackhole.refresh()
+        except Exception:
+            pass
+        try:
+            self.screenshare.refresh_peer_list()
         except Exception:
             pass
 

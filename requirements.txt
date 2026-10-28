@@ -4,5 +4,11 @@ qrcode[pil]>=7.4,<9
 pystray>=0.19.5,<1
 tkinterdnd2>=0.4.2,<1
 
+# 录屏 / 录音 / 屏幕共享（V2.3 新增）
+opencv-python-headless>=4.8
+numpy>=1.26
+sounddevice>=0.4.6
+soundcard>=0.4.3
+
 # 打包依赖（仅开发构建时需要）
 pyinstaller>=6.10,<7

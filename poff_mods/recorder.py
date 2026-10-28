@@ -154,7 +154,7 @@ class RecorderModule:
         if self._status in (_Status.RECORDING, _Status.PAUSED, _Status.PREPARING):
             self.app.log("已经在录制中，请先停止当前录制。", "warn")
             return False
-        if not self.app.enabled:
+        if not self.enabled:
             self.app.log("录屏模块已停用，先在功能开关中打开。", "warn")
             return False
         return True
@@ -363,14 +363,20 @@ class RecorderModule:
         if not peer_ip:
             messagebox.showwarning("未选择主机", "请先选择目标主机 IP。")
             return
-        self.app.log(f"正在发送 {os.path.basename(path)} → {peer_ip} ...", "info")
-        try:
-            self.app.http_send_file(peer_ip, path, kind="recording")
-            self.app.log(f"发送成功：{os.path.basename(path)} → {peer_ip}", "ok")
-            messagebox.showinfo("发送成功", f"已发送到 {peer_ip}。")
-        except Exception as e:
-            self.app.log(f"发送失败：{e}", "err")
-            messagebox.showerror("发送失败", str(e))
+        name = os.path.basename(path)
+        self.app.log(f"正在发送 {name} → {peer_ip} ...", "info")
+
+        def on_done(ok, msg):
+            # send_files_async 通过 app.ui_call 回到主线程调用，可安全弹窗
+            if ok:
+                self.app.log(f"发送成功：{name} → {peer_ip}", "ok")
+                messagebox.showinfo("发送成功", f"已发送到 {peer_ip}。")
+            else:
+                self.app.log(f"发送失败：{msg}", "err")
+                messagebox.showerror("发送失败", msg)
+
+        self.app.send_files_async([path], peer_ip, kind="recording",
+                                  on_done=on_done)
 
     def _save_as(self, path):
         target = filedialog.asksaveasfilename(
@@ -404,6 +410,7 @@ class AudioSourceDialog:
         self.ok = False
         self.mic = None
         self.sysloop = None
+        self._allow_none = allow_none
 
         self._build(root, allow_none)
 
@@ -489,7 +496,7 @@ class AudioSourceDialog:
         self.mic = next((i for i, n in self._mic_items if n == mic_name), None)
         self.sysloop = next((s for s, n in self._loop_items if n == loop_name), None)
 
-        if not allow_none and self.mic is None and self.sysloop is None:
+        if not self._allow_none and self.mic is None and self.sysloop is None:
             messagebox.showwarning("请选择", "至少选择一个音频来源。", parent=self.win)
             return
 

@@ -404,6 +404,99 @@ def _copy_image_to_clipboard(img):
         return False
 
 
+class RegionSelector:
+    """全屏选区遮罩（支持多屏虚拟桌面）：拖拽框选一个区域，Esc 取消。
+
+    供录屏等需要"只取坐标、不立即截屏"的场景复用。
+
+    用法：
+        sel = RegionSelector(root)
+        root.wait_window(sel.win)
+        if sel.confirmed:
+            left, top, right, bottom = sel.final_box   # 虚拟屏幕坐标（像素）
+    """
+
+    def __init__(self, root, hint="拖拽框选区域　·　Esc 取消"):
+        self.confirmed = False
+        self.final_box = None
+
+        user32 = ctypes.windll.user32
+        vx, vy = user32.GetSystemMetrics(76), user32.GetSystemMetrics(77)
+        vw, vh = user32.GetSystemMetrics(78), user32.GetSystemMetrics(79)
+
+        win = tk.Toplevel(root)
+        self.win = win
+        win.overrideredirect(True)
+        win.attributes("-topmost", True)
+        win.geometry(f"{vw}x{vh}+{vx}+{vy}")
+        win.configure(bg="black")
+        try:
+            win.grab_set()
+        except tk.TclError:
+            pass
+
+        canvas = tk.Canvas(win, width=vw, height=vh, highlightthickness=0,
+                           cursor="crosshair", bg="black")
+        canvas.pack(fill="both", expand=True)
+        # 半透明点阵遮罩（Tk 无真实 alpha，用 stipple 近似）
+        canvas.create_rectangle(0, 0, vw, vh, fill="black", outline="",
+                                stipple="gray50")
+        canvas.create_text(vw // 2, 28, text=hint,
+                           fill="#FFFFFF", font=("Microsoft YaHei UI", 13, "bold"))
+
+        state = {"x": 0, "y": 0, "rect": None, "info": None}
+
+        def on_press(e):
+            state["x"], state["y"] = e.x, e.y
+            if state["rect"]:
+                canvas.delete(state["rect"])
+            state["rect"] = canvas.create_rectangle(
+                e.x, e.y, e.x, e.y, outline="#22D3EE", width=2)
+            state["info"] = canvas.create_text(e.x + 6, e.y + 14, anchor="nw",
+                                               text="0 × 0", fill="#FFFFFF",
+                                               font=("Consolas", 10))
+
+        def on_drag(e):
+            if not state["rect"]:
+                return
+            x0, y0 = state["x"], state["y"]
+            canvas.coords(state["rect"], x0, y0, e.x, e.y)
+            w, h = abs(e.x - x0), abs(e.y - y0)
+            if state["info"]:
+                canvas.delete(state["info"])
+            state["info"] = canvas.create_text(
+                min(x0, e.x) + 6, max(y0, e.y) - 18, anchor="nw",
+                text=f"{w} × {h}", fill="#22D3EE", font=("Consolas", 10))
+
+        def finish(e):
+            x0, y0 = state["x"], state["y"]
+            x1, y1 = e.x, e.y
+            if abs(x1 - x0) < 5 or abs(y1 - y0) < 5:
+                cleanup()
+                return
+            # 画布坐标以遮罩窗口左上角为原点，换算回虚拟屏幕坐标
+            self.final_box = (vx + min(x0, x1), vy + min(y0, y1),
+                              vx + max(x0, x1), vy + max(y0, y1))
+            self.confirmed = True
+            cleanup()
+
+        def cleanup():
+            try:
+                win.grab_release()
+            except tk.TclError:
+                pass
+            try:
+                win.destroy()
+            except tk.TclError:
+                pass
+
+        canvas.bind("<ButtonPress-1>", on_press)
+        canvas.bind("<B1-Motion>", on_drag)
+        canvas.bind("<ButtonRelease-1>", finish)
+        win.bind("<Escape>", lambda e: cleanup())
+        win.focus_force()
+
+
 class ShotEditor:
     """截屏标注编辑器。
 

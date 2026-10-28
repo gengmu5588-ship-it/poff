@@ -114,13 +114,28 @@ class ScreenShareModule:
                  fg="#475569", font=("Microsoft YaHei UI", 9)).pack(side="left")
         peers = [ip for ip, _ in self.app.peer_items()]
         self.target_var = tk.StringVar(value=self.app.selected_ip() or (peers[0] if peers else ""))
-        ttk.Combobox(row2, values=peers, textvariable=self.target_var, width=20,
-                     state="readonly").pack(side="left", padx=(4, 0))
+        self.target_combo = ttk.Combobox(row2, values=peers, textvariable=self.target_var,
+                                         width=20, state="readonly")
+        self.target_combo.pack(side="left", padx=(4, 0))
         if not peers:
             tk.Label(row2, text="（未添加主机）", bg=parent.master["background"]
                      if parent.master else "#F2F5FA", fg="#94A3B8",
                      font=("Microsoft YaHei UI", 8)).pack(side="left", padx=4)
         return box
+
+    def refresh_peer_list(self):
+        """主机列表变化后由主程序调用，刷新共享目标下拉。"""
+        combo = getattr(self, "target_combo", None)
+        if combo is None:
+            return
+        try:
+            peers = [ip for ip, _ in self.app.peer_items()]
+            combo.configure(values=peers)
+            cur = self.target_var.get()
+            if cur not in peers:
+                self.target_var.set(self.app.selected_ip() or (peers[0] if peers else ""))
+        except Exception:
+            pass
 
     # ---------------- 发起 ----------------
     def _on_start(self):
@@ -144,8 +159,8 @@ class ScreenShareModule:
             return
 
         # 检查 KVM 会话（需要是 ROAMING_ESTABLISHED）
-        kvm = getattr(self.app, "kvm_engine", None)
-        if kvm is None or not kvm.is_connected(target):
+        roam = getattr(self.app, "roam", None)
+        if roam is None or not roam.is_connected(target):
             messagebox.showwarning("KVM 未连接",
                                    "屏幕共享需要双方 KVM 会话已建立（功能总开关里的键鼠漫游已开 + 主机已配对）。")
             return
@@ -155,7 +170,7 @@ class ScreenShareModule:
 
         # 通过 KVM 会话发控制码
         try:
-            kvm.send_share_start(target, self.app.my_port or 17890)
+            roam.send_share_start(target)
             self.app.log(f"已通知 {target} 准备接收屏幕共享。", "ok")
         except Exception as e:
             self.app.log(f"发送共享通知失败：{e}", "err")
@@ -163,10 +178,10 @@ class ScreenShareModule:
     def _on_stop(self):
         target = self.target_var.get()
         self._stop_sharing()
-        kvm = getattr(self.app, "kvm_engine", None)
-        if kvm is not None and target:
+        roam = getattr(self.app, "roam", None)
+        if roam is not None and target:
             try:
-                kvm.send_share_stop(target)
+                roam.send_share_stop(target)
             except Exception:
                 pass
 
@@ -193,9 +208,7 @@ class ScreenShareModule:
         self._stream_thread.start()
         self._started_at = time.time()
 
-        # 防火墙放行（管理员模式）
-        if getattr(self.app, "_ensure_share_fw", None):
-            self.app._ensure_share_fw()
+        # 防火墙放行已在主程序启动时统一处理（_ensure_firewall_rules 含 17892）
 
         # UI 切换
         self.btn_start.config(state="disabled")
