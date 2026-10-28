@@ -171,11 +171,7 @@ class IOSwitch(tk.Canvas):
                                         outline=IOS_SW_FRAME, width=1, tags='frame_r')
 
         # thumb 阴影 + 本体（阴影放 thumb 底下，切换时一起移动）
-        self._shadow = self.create_oval(0, 0, 1, 1, fill='rgba(0,0,0,0.18)', outline='')
-        try:
-            self.itemconfigure(self._shadow, fill='#B3B3B3')  # Tk 不支持 rgba，用接近的
-        except tk.TclError:
-            self.itemconfigure(self._shadow, fill='#C7C7CC')
+        self._shadow = self.create_oval(0, 0, 1, 1, fill='#C7C7CC', outline='')
         self._thumb = self.create_oval(0, 0, 1, 1, fill=IOS_SW_THUMB, outline='')
 
         # 点击 / 悬停
