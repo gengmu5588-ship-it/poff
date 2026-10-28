@@ -96,11 +96,13 @@ USER_APP_PROCESS_NAMES = [
 ]
 
 # ===================== 视觉规范 =====================
-# iOS 开关色板
-IOS_SW_ON = "#34C759"        # Apple system green
-IOS_SW_OFF = "#E5E5EA"       # Apple off gray
-IOS_SW_THUMB = "#FFFFFF"
-IOS_SW_FRAME = "#D1D1D6"     # 开关外边框（关状态）
+# 开关色板（扁平化 + 跟随 POFF accent 绿）
+SW_ON = "#16A34A"              # 开态轨道（与日志区 OK 状态同色）
+SW_ON_HOVER = "#12873E"        # 开态 hover 加深
+SW_OFF = "#E3EAF5"             # 关态轨道（低饱和蓝灰，贴合 CARD #FFFFFF + BORDER #DCE3ED）
+SW_OFF_HOVER = "#D3DDEC"       # 关态 hover 加深
+SW_FRAME = "#C5D0E1"           # 边框（仅关态可见）
+SW_THUMB = "#FFFFFF"           # thumb 白色始终不变
 
 BG = "#F2F5FA"
 CARD = "#FFFFFF"
@@ -128,19 +130,28 @@ def get_data_dir():
     return path
 
 
-class IOSwitch(tk.Canvas):
-    """iOS 风格开关：圆角滑块 + 圆形 thumb，点击切换 BooleanVar。"""
+class FlatToggle(tk.Canvas):
+    """扁平化开关：圆角轨道 + 圆形 thumb，跟随 BooleanVar 切换。
 
-    W = 51                  # 轨道宽
-    H = 31                  # 轨道高
-    PAD = 2                 # 轨道内边距
-    ANIM_MS = 110
+    设计：
+      - 轨道宽 40 × 高 20（紧凑，不抢标签空间）
+      - 开态：OK 绿（#16A34A，与日志区一致）；关态：低饱和蓝灰（#E3EAF5）
+      - 边框 1px，仅关态可见；开态被绿色填充覆盖
+      - thumb 白色正圆，位置由关态左 → 开态右 ease-out 过渡（90ms / 7 帧）
+      - hover 颜色加深 + 光标变手型
+    """
+
+    W = 40
+    H = 20
+    PAD = 2                      # 轨道内 padding，让 thumb 不贴边
+    FRAME = 1                    # 边框宽度
 
     def __init__(self, master, variable, on_change=None, **kw):
         self._var = variable
         self._on_change = on_change
         self._anim_job = None
-        self._thumb_x = None          # 当前 thumb 中心 x（动画过程中使用）
+        self._hovering = False
+        self._thumb_x = None
 
         kw.setdefault('width', self.W)
         kw.setdefault('height', self.H)
@@ -149,97 +160,99 @@ class IOSwitch(tk.Canvas):
         kw.setdefault('bg', CARD)
         super().__init__(master, **kw)
 
-        self._radius = self.H // 2
-        self._thumb_r = self._radius - self.PAD
-        self._off_x = self._radius          # thumb 关状态中心 x
-        self._on_x = self.W - self._radius  # thumb 开状态中心 x
-        self._thumb_y = self.H // 2
+        self._r = self.H // 2
+        self._thumb_r = self._r - self.PAD
+        self._off_x = self._r                     # thumb 关态中心 x
+        self._on_x = self.W - self._r             # thumb 开态中心 x
+        self._thumb_y = self._r
 
-        # 圆角轨道：左半圆 + 中间矩形 + 右半圆
-        self._body = [
-            self.create_oval(0, 0, self.H, self.H, outline='', tags='body'),
-            self.create_rectangle(self._radius, 0, self.W - self._radius, self.H,
-                                   outline='', tags='body'),
-            self.create_oval(self.W - self.H, 0, self.W, self.H, outline='', tags='body'),
-        ]
-        # 边框（仅关状态可见，开状态绿色作为填充视觉上已足够）
-        self._frame = self.create_oval(0, 0, self.H, self.H, outline=IOS_SW_FRAME,
-                                       width=1, tags='frame_l')
-        self._frame2 = self.create_rectangle(self._radius, 0, self.W - self._radius, self.H,
-                                             outline='', tags='frame_m')
-        self._frame3 = self.create_oval(self.W - self.H, 0, self.W, self.H,
-                                        outline=IOS_SW_FRAME, width=1, tags='frame_r')
+        # 圆角轨道（左半圆 + 矩形 + 右半圆）+ 同轮廓边框
+        self._body_l = self.create_oval(0, 0, self.H, self.H, outline='', tags='body')
+        self._body_m = self.create_rectangle(
+            self._r, 0, self.W - self._r, self.H, outline='', tags='body')
+        self._body_r = self.create_oval(
+            self.W - self.H, 0, self.W, self.H, outline='', tags='body')
+        self._frame_l = self.create_oval(
+            0, 0, self.H, self.H, outline=SW_FRAME, width=self.FRAME, tags='frame')
+        self._frame_m = self.create_rectangle(
+            self._r, 0, self.W - self._r, self.H, outline='', width=1, tags='frame')
+        self._frame_r = self.create_oval(
+            self.W - self.H, 0, self.W, self.H, outline=SW_FRAME, width=self.FRAME, tags='frame')
 
-        # thumb 阴影 + 本体（阴影放 thumb 底下，切换时一起移动）
-        self._shadow = self.create_oval(0, 0, 1, 1, fill='#C7C7CC', outline='')
-        self._thumb = self.create_oval(0, 0, 1, 1, fill=IOS_SW_THUMB, outline='')
+        # thumb（白色正圆，始终不变）
+        self._thumb = self.create_oval(0, 0, 1, 1, fill=SW_THUMB, outline='')
 
-        # 点击 / 悬停
         self.bind("<Button-1>", self._on_click)
-        self.bind("<Enter>", lambda e: self.config(cursor="hand2"))
-        self.bind("<Leave>", lambda e: self.config(cursor=""))
+        self.bind("<Enter>", self._on_enter)
+        self.bind("<Leave>", self._on_leave)
 
         self._var.trace_add('write', lambda *a: self._render(animate=True))
         self._render(animate=False)
 
-    # ---- 内部 ----
+    # ---- 渲染 ----
+    def _body_color(self):
+        if bool(self._var.get()):
+            return SW_ON_HOVER if self._hovering else SW_ON
+        return SW_OFF_HOVER if self._hovering else SW_OFF
+
+    def _frame_color(self):
+        on = bool(self._var.get())
+        # 开态：边框颜色 = 轨道颜色（视觉上被绿色填充盖住）
+        if on:
+            return self._body_color()
+        # 关态：边框始终可见
+        return SW_FRAME
+
+    def _render(self, animate):
+        fill = self._body_color()
+        for iid in (self._body_l, self._body_m, self._body_r):
+            self.itemconfigure(iid, fill=fill)
+        frame_c = self._frame_color()
+        for iid in (self._frame_l, self._frame_r):
+            self.itemconfigure(iid, outline=frame_c)
+
+        target = self._on_x if bool(self._var.get()) else self._off_x
+        if not animate or self._thumb_x is None:
+            self._thumb_x = target
+            self._place_thumb(target)
+            return
+        self._animate_to(target)
+
     def _thumb_geom(self, cx):
         r = self._thumb_r
         cy = self._thumb_y
         return cx - r, cy - r, cx + r, cy + r
 
-    def _target_x(self):
-        return self._on_x if bool(self._var.get()) else self._off_x
-
-    def _render(self, animate):
-        on = bool(self._var.get())
-        body_fill = IOS_SW_ON if on else IOS_SW_OFF
-        for iid in self._body:
-            self.itemconfigure(iid, fill=body_fill)
-        # 边框：开状态时被绿色填充盖住（视觉上就是绿轨道）
-        frame_color = IOS_SW_ON if on else IOS_SW_FRAME
-        self.itemconfigure(self._frame, outline=frame_color)
-        self.itemconfigure(self._frame3, outline=frame_color)
-
-        target = self._target_x()
-        if not animate or self._thumb_x is None:
-            self._thumb_x = target
-            self._place_thumb(target)
-            return
-
-        self._animate_to(target)
-
     def _place_thumb(self, cx):
-        x0, y0, x1, y1 = self._thumb_geom(cx)
-        self.coords(self._thumb, x0, y0, x1, y1)
-        # 阴影轻微下偏移
-        self.coords(self._shadow, x0 + 0, y0 + 1, x1 + 0, y1 + 1)
+        self._thumb_x = cx
+        self.coords(self._thumb, self._thumb_geom(cx))
 
     def _animate_to(self, target):
         if self._anim_job is not None:
             self.after_cancel(self._anim_job)
         start = self._thumb_x
         delta = target - start
-        steps = 8
-        step_ms = max(6, self.ANIM_MS // steps)
+        if abs(delta) < 0.5:
+            self._place_thumb(target)
+            return
+
+        steps = 7
+        step_ms = 13              # 7 × 13 ≈ 90ms
         self._anim_job = None
 
         def step(i):
             if i >= steps:
-                self._thumb_x = target
                 self._place_thumb(target)
                 self._anim_job = None
                 return
-            # ease-out（二次方）
             t = i / steps
-            eased = 1 - (1 - t) ** 2
-            cx = start + delta * eased
-            self._thumb_x = cx
-            self._place_thumb(cx)
+            eased = 1 - (1 - t) ** 2   # ease-out 二次方
+            self._place_thumb(start + delta * eased)
             self._anim_job = self.after(step_ms, lambda: step(i + 1))
 
         step(0)
 
+    # ---- 交互 ----
     def _on_click(self, _event=None):
         self._var.set(not bool(self._var.get()))
         if self._on_change is not None:
@@ -247,6 +260,16 @@ class IOSwitch(tk.Canvas):
                 self._on_change()
             except Exception:
                 pass
+
+    def _on_enter(self, _event):
+        self._hovering = True
+        self.config(cursor="hand2")
+        self._render(animate=False)
+
+    def _on_leave(self, _event):
+        self._hovering = False
+        self.config(cursor="")
+        self._render(animate=False)
 
 
 PEERS_FILE = os.path.join(get_data_dir(), "peers.json")
@@ -762,11 +785,11 @@ class PoffApp:
             var = tk.BooleanVar(value=bool(mods.get(key, True)))
             self.mod_vars[key] = var
             cell = ttk.Frame(grid, style="Card.TFrame")
-            cell.grid(row=0, column=i, sticky="nw", padx=(0, 28))
-            IOSwitch(cell, variable=var,
-                     on_change=lambda k=key: self.on_module_toggle(k)).grid(row=0, column=0, sticky="w")
+            cell.grid(row=0, column=i, sticky="nw", padx=(0, 22))
+            FlatToggle(cell, variable=var,
+                       on_change=lambda k=key: self.on_module_toggle(k)).grid(row=0, column=0, sticky="w")
             ttk.Label(cell, text=label, style="Muted.TLabel",
-                      font=("PingFang SC", 8)).grid(row=1, column=0, sticky="w", pady=(4, 0))
+                      font=("PingFang SC", 8)).grid(row=1, column=0, sticky="w", pady=(6, 0))
 
         ttk.Label(card,
                   text="全局热键：Ctrl+Shift+F 全屏截屏　Ctrl+Shift+S 选区截屏　"
