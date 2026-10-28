@@ -90,6 +90,7 @@ class ScreenShareModule:
     # ---------------- 面板 UI ----------------
     def build_panel(self, parent):
         box = ttk.LabelFrame(parent, text="屏幕共享", padding=(12, 10))
+        box.pack(fill="x", anchor="n", padx=16, pady=12)
         if not (_CV2_OK and _NP_OK and _PIL_OK):
             ttk.Label(box, text="依赖缺失：opencv / numpy / Pillow 不可用，共享禁用。",
                       style="Muted.TLabel", wraplength=440).pack(anchor="w")

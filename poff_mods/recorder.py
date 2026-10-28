@@ -95,6 +95,7 @@ class RecorderModule:
     # ---------------- 面板 UI ----------------
     def build_panel(self, parent):
         box = ttk.LabelFrame(parent, text="录屏 / 录音", padding=(12, 10))
+        box.pack(fill="x", anchor="n", padx=16, pady=12)
         if not (_CV2_OK and _NP_OK and _PIL_GRAB_OK):
             ttk.Label(box, text="依赖缺失：opencv 或 numpy 不可用，录屏功能禁用。",
                       style="Muted.TLabel", wraplength=440).pack(anchor="w")

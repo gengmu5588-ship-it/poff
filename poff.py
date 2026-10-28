@@ -62,7 +62,7 @@ except Exception:
 # ====================================================
 APP_NAME = "POFF V2.2 局域网多主机控制"
 APP_TITLE = "POFF V2.2"
-VERSION = "2.3.1"
+VERSION = "2.3.2"
 CODE_APP_TAG = "poff"
 CODE_VERSION = 2
 
