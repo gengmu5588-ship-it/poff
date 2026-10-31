@@ -1,5 +1,11 @@
 '''POFF V2.2　局域网多主机控制工具
 
+V2.4.15 相对 V2.4.14：
+  1. 新版本提示：启动后后台拉一次远端版本，比本机新就在侧栏 POFF 右上角浮出
+     红色「新版本」，点击直达发布页（默认读 GitHub Release API，可用 update.url 覆盖）
+  2. 运行日志卡片标题右侧新增统计：装机次数（远端 exe 累计下载数，离线回落到
+     上次缓存值）+ 在线 IP 数（本机视角：自己 + 校验通过的主机）
+
 V2.2 相对 V2.1：
   1. 手机投递（MobiDrop）：内置 HTTP 服务（端口 17891），手机浏览器扫码即用、
      零安装；电脑投递的文件进入待接收区，手机点按下载（完成后自动清理）
@@ -40,6 +46,8 @@ import sys
 import threading
 import time
 import tkinter as tk
+import urllib.request
+import webbrowser
 from tkinter import (ttk, messagebox)
 
 # poff_mods 里有若干 `from poff import SectionCard, PAD_CARD, ...`。
@@ -72,7 +80,7 @@ except Exception:
     _DND_OK = False
 APP_NAME = 'POFF 局域网多主机控制'
 APP_TITLE = 'POFF'
-VERSION = '2.4.14'
+VERSION = '2.4.15'
 CODE_APP_TAG = 'poff'
 CODE_VERSION = 2
 TCP_PORT = 17890
@@ -88,6 +96,13 @@ MSG_SHUTDOWN = 'SHUTDOWN'
 MSG_SINGLE_SHUTDOWN = 'SINGLE_SHUTDOWN'
 MSG_PRECHECK = 'PRECHECK'
 MSG_SHARE = 'SHARE'
+# 远端版本 + 装机统计的数据源：一次请求把两件事都办了（GitHub Release 列表里
+# 既有最新 tag，也有每个 exe 附件的 download_count）。想要自己的统计口径，
+# 在 config.json 里配 update.url 指向一个 {"version": "x.y.z", "url": "...",
+# "installs": 123} 的 JSON 即可，字段缺哪个就少哪块能力。
+GITHUB_RELEASES_API = 'https://api.github.com/repos/gengmu5588-ship-it/poff/releases?per_page=100'
+GITHUB_RELEASES_HOME = 'https://github.com/gengmu5588-ship-it/poff/releases'
+REMOTE_TIMEOUT = 8.0
 PRECHECK_RECV_TIMEOUT = 5.0
 PRECHECK_SCAN_TIMEOUT = 8.0
 USER_APP_PROCESS_NAMES = ['WINWORD.EXE', 'EXCEL.EXE', 'POWERPNT.EXE', 'ONENOTE.EXE', 'OUTLOOK.EXE', 'ACCESS.EXE', 'MSPUB.EXE', 'WPS.EXE', 'ET.EXE', 'WPP.EXE', 'WPSPP.EXE', 'NOTEPAD.EXE', 'WORDPAD.EXE', 'ACRORD32.EXE', 'ACROBAT.EXE', 'ACROBAT_RW.EXE', 'PHOTOSHOP.EXE', 'ILLUSTRATOR.EXE', 'PAINT.NET.EXE', 'GIMP-2.10.EXE', 'MSPAINT.EXE', 'CODE.EXE', 'PYCHARM64.EXE', 'IDEA64.EXE', 'RIDER64.EXE', 'STUDIO64.EXE', 'CLION64.EXE', 'WEBIDEAS64.EXE', 'NOTEPAD++.EXE', 'SUBLIME_TEXT.EXE', 'CHROME.EXE', 'MSEDGE.EXE', 'FIREFOX.EXE', 'OPERA.EXE', 'BRAVE.EXE', 'WINRAR.EXE', '7Z.EXE']
@@ -1103,8 +1118,30 @@ def _resource_path(name):
     base = getattr(sys, '_MEIPASS', os.path.dirname(os.path.abspath(__file__)))
     return os.path.join(base, name)
 
+def parse_version(text):
+    '''把 'v2.4.15' / 'POFF V2.4.15' / '2.4' 之类的串转成可比大小的三段元组。
+
+    只取前三段数字，非数字一律当分隔符——Release 名字里带「RC1」「beta」
+    这类后缀时也不会把整串判成 0 导致误报新版本。
+    '''
+
+    parts = []
+    buf = ''
+    for ch in str(text or ''):
+        if ch.isdigit():
+            buf += ch
+        elif buf:
+            parts.append(int(buf))
+            buf = ''
+            if len(parts) >= 3:
+                break
+    if buf and len(parts) < 3:
+        parts.append(int(buf))
+    return tuple(parts) if parts else (0,)
+
+
 def default_cfg():
-    return {'modules': {'screenshot': True, 'brightness': True, 'tablet': True, 'roam': False, 'blackhole': True}, 'dirs': {}, 'blackhole': {'show': True, 'topmost': True, 'auto_hide': True, 'ignore_drag': False, 'open_on_hide': True}, 'roam': {'threshold': 30, 'layout': {}, 'self_role': 'main', 'target_ip': '', 'target_port': TCP_PORT}, 'mobi': {'token': ''}, 'theme': 'system'}
+    return {'modules': {'screenshot': True, 'brightness': True, 'tablet': True, 'roam': False, 'blackhole': True}, 'dirs': {}, 'blackhole': {'show': True, 'topmost': True, 'auto_hide': True, 'ignore_drag': False, 'open_on_hide': True}, 'roam': {'threshold': 30, 'layout': {}, 'self_role': 'main', 'target_ip': '', 'target_port': TCP_PORT}, 'mobi': {'token': ''}, 'theme': 'system', 'update': {'url': ''}, 'stats': {'installs': 0, 'synced_at': ''}}
 
 def load_cfg():
     cfg = default_cfg()
@@ -1112,7 +1149,7 @@ def load_cfg():
         with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
             data = json.load(f)
         if isinstance(data, dict):
-            for key in ('modules', 'dirs', 'blackhole', 'roam', 'mobi'):
+            for key in ('modules', 'dirs', 'blackhole', 'roam', 'mobi', 'update', 'stats'):
                 if isinstance(data.get(key), dict):
                     cfg[key].update(data[key])
             # 主题是标量，早先漏在这个白名单外，导致每次启动都被重置成「跟随系统」
@@ -1317,6 +1354,9 @@ class PoffApp:
         if self.mobi.start():
             self.log(f'手机投递服务已启动：http://{self.local_ip}:{MOBI_PORT}（手机扫码即用）', 'ok')
         self.root.after(3000, self._poll_mobiles)
+        # 启动 3 秒后拉一次远端（版本 + 装机统计）。放在这里而不是 __init__ 里
+        # 同步跑：开机自启时窗口是隐藏的，网络慢也不该把启动卡住。
+        self.root.after(3000, (lambda: self._start_remote_probe()))
         self.tray_icon = self._init_tray()
         self._win_state = self.root.state()
         self._root_after(800, self._watch_window_state)
@@ -1762,6 +1802,12 @@ class PoffApp:
         '''板块：运行日志（占满剩余空间）。'''
 
         card = SectionCard(parent, title='运行日志')
+        # 统计挂在标题行右侧：装机次数（发布页 exe 累计下载数）+ 在线 IP 数（本机视角）
+        self._stats_lbl = tk.Label(card._header_extra, text='装机 — 次 · 在线 1 台', bg=CARD,
+                                   fg=MUTED, font=FONT_CAP, cursor='hand2')
+        self._stats_lbl.bind('<Button-1>', (lambda e: self._explain_stats()))
+        card.pack_extra(self._stats_lbl)
+        self._refresh_stats()
         body = card.body
         wrap = tk.Frame(body, bg=LOG_BG)
         wrap.pack(fill='both', expand=True)
@@ -2433,6 +2479,11 @@ class PoffApp:
                                     font=('Segoe UI Semibold', 15, 'bold'))
         # side='left' 默认 anchor=center，与 40px 的图标自动垂直居中对齐
         self._logo_title.pack(side='left', padx=(10, 0))
+        # 「新版本」角标：anchor='n' 让这行小字贴着品牌行的顶端，正好落在
+        # POFF 字样的右上角。默认不 pack，只有远端版本比本机新时才浮出来。
+        self._badge_new = tk.Label(brand, text='新版本', bg=HEADER_BG, fg=ERR,
+                                   font=('Microsoft YaHei UI', 8, 'bold'), cursor='hand2')
+        self._badge_new.bind('<Button-1>', (lambda e: self._open_update_url()))
         self._refresh_logo()
         tk.Frame(parent, bg=BORDER, height=1).pack(fill='x', padx=18)
         self._nav_items = {}
@@ -2549,9 +2600,178 @@ class PoffApp:
         except Exception:
             pass
 
+    # ===================== 远端版本 / 装机·在线统计 =====================
+
+    def _stats_installs(self):
+        '''装机次数：优先发布页 exe 的累计下载数（全局、各面板一致）。
+
+        取不到或还是 0（比如一直靠微信直发、发布页没人下载）时，回落到本机
+        视角的装机台数——自己这台算 1，设备列表里每台 PC 也算 1。否则面板上
+        会永远挂着一个"装机 0 次"，看着像坏了。
+        '''
+
+        try:
+            remote = int((self.cfg.get('stats') or {}).get('installs') or 0)
+        except (TypeError, ValueError):
+            remote = 0
+        if remote > 0:
+            return remote, True
+        with self.peer_lock:
+            lan = 1 + sum((1 for info in self.peer_list.values() if info.get('kind') != 'mobile'))
+        return lan, False
+
+    def _stats_online(self):
+        '''在线 IP 数：本机算 1 台，加上设备列表里最近一次校验通过的主机。'''
+
+        with self.peer_lock:
+            return 1 + sum((1 for info in self.peer_list.values() if info.get('ok')))
+
+    def _refresh_stats(self):
+        lbl = getattr(self, '_stats_lbl', None)
+        if lbl is None:
+            return
+        try:
+            if not lbl.winfo_exists():
+                return
+            installs, _ = self._stats_installs()
+            lbl.configure(text=f'装机 {installs:,} 次 · 在线 {self._stats_online()} 台')
+        except tk.TclError:
+            pass
+
+    def _explain_stats(self):
+        '''点一下统计文字，在日志里说清两个数字的口径。
+
+        装机数是全局数（发布页下载量），在线数只有本机视角——不说明的话
+        很容易被读成"全网有几台在线"。
+        '''
+
+        installs, from_remote = self._stats_installs()
+        synced = str((self.cfg.get('stats') or {}).get('synced_at') or '未知时间')
+        if from_remote:
+            src = f'发布页各版本 exe 累计下载数（{"本次联网更新" if getattr(self, "_stats_live", False) else "上次缓存值"} · {synced}）'
+        else:
+            src = '本机视角的装机台数（自己 + 设备列表里的 PC；发布页暂无下载量）'
+        self.log(f'统计：装机 {installs:,} 次 ＝ {src}；'
+                 f'在线 {self._stats_online()} 台 ＝ 本机视角（自己 + 列表里校验通过的主机）', 'info')
+
+    def _remote_url(self):
+        url = str((self.cfg.get('update') or {}).get('url') or '').strip()
+        return url or GITHUB_RELEASES_API
+
+    def _remote_probe(self):
+        '''拉一次远端，一次请求同时拿「最新版本号」和「装机下载数」。
+
+        返回 (version, url, installs)，取不到的那一项就是 None。
+        兼容两种返回：GitHub Release 列表（数组）或自定义 JSON（对象）。
+        '''
+
+        req = urllib.request.Request(self._remote_url(), headers={'User-Agent': f'POFF/{VERSION}', 'Accept': 'application/vnd.github+json'})
+        with urllib.request.urlopen(req, timeout=REMOTE_TIMEOUT) as resp:
+            data = json.loads(resp.read().decode('utf-8', 'errors=ignore'))
+        version = None
+        home = GITHUB_RELEASES_HOME
+        installs = None
+        if isinstance(data, list):
+            rels = [r for r in data if isinstance(r, dict) and not r.get('draft') and not r.get('prerelease')]
+            latest = rels[0] if rels else next((r for r in data if isinstance(r, dict)), None)
+            if latest is not None:
+                version = str(latest.get('tag_name') or latest.get('name') or '') or None
+                home = str(latest.get('html_url') or home)
+            # 同名附件只取下载数最大的那份：同一个 exe 被重复上传到不同 tag
+            # 时不重复计数，否则一个数会被放大好几倍。
+            per_name = {}
+            for rel in data:
+                if not isinstance(rel, dict):
+                    continue
+                for asset in rel.get('assets') or []:
+                    if not isinstance(asset, dict):
+                        continue
+                    name = str(asset.get('name') or '')
+                    if not name.lower().endswith('.exe'):
+                        continue
+                    try:
+                        cnt = int(asset.get('download_count') or 0)
+                    except (TypeError, ValueError):
+                        continue
+                    per_name[name] = max(per_name.get(name, 0), cnt)
+            installs = sum(per_name.values())
+        elif isinstance(data, dict):
+            version = str(data.get('version') or data.get('tag_name') or '') or None
+            home = str(data.get('url') or data.get('html_url') or home)
+            try:
+                installs = int(data.get('installs'))
+            except (TypeError, ValueError):
+                installs = None
+        return version, home, installs
+
+    def _start_remote_probe(self, manual=False):
+        def task():
+            err = ''
+            try:
+                version, home, installs = self._remote_probe()
+            except Exception as e:
+                version, home, installs = None, GITHUB_RELEASES_HOME, None
+                err = str(e) or e.__class__.__name__
+            self.ui_call(self._on_remote_probe, version, home, installs, err, manual)
+
+        threading.Thread(target=task, daemon=True).start()
+
+    def _on_remote_probe(self, version, home, installs, err, manual):
+        self._stats_live = installs is not None
+        if installs is not None:
+            stats = self.cfg.setdefault('stats', {})
+            stats['installs'] = installs
+            stats['synced_at'] = datetime.datetime.now().strftime('%Y-%m-%d %H:%M')
+            self.save_cfg()
+        self._refresh_stats()
+        newer = bool(version) and parse_version(version) > parse_version(VERSION)
+        if newer:
+            self._show_new_version(home)
+            self.log(f'发现新版本 V{version}（当前 V{VERSION}），点侧栏「新版本」直达：{home}', 'warn')
+            return
+        self._hide_new_version()
+        if manual:
+            if err:
+                messagebox.showinfo('检查更新', f'暂时取不到远端版本，稍后再试。\n\n当前版本：POFF V{VERSION}\n{err}')
+            else:
+                messagebox.showinfo('检查更新', f'当前已是最新版：POFF V{VERSION}')
+
+    def _show_new_version(self, home):
+        '''侧栏 POFF 右上角浮出红色「新版本」。'''
+
+        self._update_url = home or GITHUB_RELEASES_HOME
+        badge = getattr(self, '_badge_new', None)
+        if badge is None:
+            return
+        try:
+            if not badge.winfo_exists() or badge.winfo_ismapped():
+                return
+            badge.pack(side='left', anchor='n', padx=(6, 0))
+        except tk.TclError:
+            pass
+
+    def _hide_new_version(self):
+        badge = getattr(self, '_badge_new', None)
+        if badge is None:
+            return
+        try:
+            if badge.winfo_exists() and badge.winfo_ismapped():
+                badge.pack_forget()
+        except tk.TclError:
+            pass
+
+    def _open_update_url(self):
+        url = getattr(self, '_update_url', '') or GITHUB_RELEASES_HOME
+        try:
+            webbrowser.open(url)
+            self.log(f'已打开发布页：{url}', 'ok')
+        except Exception as e:
+            self.log(f'打开发布页失败：{e}', 'err')
+            messagebox.showinfo('新版本', f'请手动访问：\n{url}')
+
     def _check_update(self):
-        self.log(f'当前版本 POFF V{VERSION}。检查更新功能暂未接入，请关注 GitHub release。', 'info')
-        messagebox.showinfo('版本信息', f'POFF V{VERSION}\n\n检查更新功能后续接入。\nGitHub: https://github.com/gengmu5588-ship-it/poff')
+        self.log('正在检查新版本…', 'info')
+        self._start_remote_probe(manual=True)
 
     def _copy_to_clip(self, text):
         try:
@@ -3068,6 +3288,8 @@ class PoffApp:
 
     def refresh_peer_ui(self):
         prev = self.selected_ip()
+        # 在线数跟着设备列表走：校验完 / 增删主机后这里必然被调一次
+        self._refresh_stats()
         for item in self.peer_box.get_children():
             self.peer_box.delete(item)
         for ip, info in sorted(self.peer_list.items()):
