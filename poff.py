@@ -72,7 +72,7 @@ except Exception:
     _DND_OK = False
 APP_NAME = 'POFF 局域网多主机控制'
 APP_TITLE = 'POFF'
-VERSION = '2.4.13'
+VERSION = '2.4.14'
 CODE_APP_TAG = 'poff'
 CODE_VERSION = 2
 TCP_PORT = 17890
@@ -3761,6 +3761,8 @@ class PoffApp:
 
         remote_ip = conn.getpeername()[0]
         conn.settimeout(120)
+        # 接收大文件时把接收窗口撑到 4MB，否则高延迟 WiFi 上吞吐被窗口卡死
+        transfer.tune_socket(conn, rcv=True)
         f = conn.makefile('rb')
         try:
             line = f.readline(4096)
@@ -3871,15 +3873,20 @@ class PoffApp:
         tmp_path = os.path.join(target_dir, f'.{os.getpid()}_{int(time.time() * 1000)}.part')
         digest = hashlib.sha256()
         remaining = size
+        buf = bytearray(transfer.CHUNK)
+        view = memoryview(buf)
         try:
-            with open(tmp_path, 'wb') as out:
+            # 1MB 写缓冲 + readinto 复用同一块内存：1GB 文件少掉一万多次小块
+            # 读写与内存分配，接收端不再是瓶颈。
+            with open(tmp_path, 'wb', buffering=transfer.CHUNK) as out:
                 while remaining > 0:
-                    block = f.read(min(transfer.CHUNK, remaining))
-                    if not block:
+                    want = transfer.CHUNK if remaining > transfer.CHUNK else remaining
+                    got = f.readinto(view[:want])
+                    if not got:
                         raise OSError('连接提前断开')
-                    out.write(block)
-                    digest.update(block)
-                    remaining -= len(block)
+                    digest.update(view[:got])
+                    out.write(view[:got])
+                    remaining -= got
         except OSError as e:
             try:
                 os.remove(tmp_path)
@@ -4012,9 +4019,18 @@ class PoffApp:
                     if on_progress:
                         self.ui_call(on_progress, p, sent, total)
 
+                t0 = time.monotonic()
                 ok, msg = transfer.send_file(ip, port, path, kind=kind, progress=progress)
+                dur = time.monotonic() - t0
                 if ok:
-                    self.log(f'文件已送达 {ip}：{os.path.basename(path)}（{idx}/{len(paths)}）', 'ok')
+                    extra = ''
+                    try:
+                        size = os.path.getsize(path)
+                        if dur > 0.05:
+                            extra = f'，{dur:.1f}s（{size / dur / 1048576:.1f} MB/s）'
+                    except OSError:
+                        pass
+                    self.log(f'文件已送达 {ip}：{os.path.basename(path)}（{idx}/{len(paths)}）{extra}', 'ok')
                 else:
                     ok_all = False
                     last_err = msg

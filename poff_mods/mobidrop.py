@@ -313,6 +313,15 @@ class MobiHandler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):  # 静默默认日志，避免刷控制台
         pass
 
+    def setup(self):
+        """手机投递也是 TCP，同样把缓冲撑起来（高延迟 WiFi 上差别很明显）。"""
+        super().setup()
+        try:
+            from .transfer import tune_socket
+            tune_socket(self.connection)
+        except Exception:
+            pass
+
     # ---- 响应辅助 ----
     def _send_bytes(self, code, body, ctype):
         try:

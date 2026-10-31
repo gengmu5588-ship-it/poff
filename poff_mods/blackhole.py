@@ -4,10 +4,12 @@
 拖拽依赖 tkinterdnd2；缺失时自动降级为"选择文件投递"。
 """
 import os
+import time
 import tkinter as tk
 from tkinter import ttk, filedialog, messagebox, simpledialog
 
 from . import mobidrop as mobi_mod
+from . import system_tools as st
 
 try:
     from tkinterdnd2 import DND_FILES
@@ -16,6 +18,20 @@ except Exception:
 
 PANEL_W = 252
 STRIP_W = 14
+
+
+def _ellipsis(text, limit):
+    """面板宽度只有 224px，长文件名截断，否则进度和速度全被挤出去。"""
+    return text if len(text) <= limit else text[:limit - 1] + '…'
+
+
+def _fmt_eta(seconds):
+    seconds = int(seconds)
+    if seconds < 60:
+        return f'{seconds}s'
+    if seconds < 3600:
+        return f'{seconds // 60}:{seconds % 60:02d}'
+    return f'{seconds // 3600}:{seconds % 3600 // 60:02d}:{seconds % 60:02d}'
 
 
 class BlackholeModule:
@@ -529,6 +545,8 @@ class BlackholeModule:
         total = len(files)
         self._set_status(f"正在投递 0/{total} ...")
         self.app.log(f"开始投递 {total} 个文件到 {ip}", "info")
+        # 速率用滑动平均：瞬时值抖得厉害，直接显示会一直跳
+        meter = {'t': time.monotonic(), 'sent': 0, 'rate': 0.0}
 
         def on_done(ok, msg):
             self._set_status(("投递完成" if ok else f"投递失败：{msg}"))
@@ -536,8 +554,20 @@ class BlackholeModule:
                          "ok" if ok else "err")
 
         def on_progress(path, sent, size):
-            pct = int(sent * 100 / size) if size else 100
-            self._set_status(f"{os.path.basename(path)}  {pct}%")
+            now = time.monotonic()
+            dt = now - meter['t']
+            if dt >= 0.3:
+                inst = (sent - meter['sent']) / dt
+                meter['rate'] = inst if meter['rate'] <= 0 else meter['rate'] * 0.55 + inst * 0.45
+                meter['t'], meter['sent'] = now, sent
+            pct = sent * 100 / size if size else 100
+            line = f"{_ellipsis(os.path.basename(path), 15)}\n{pct:.0f}%"
+            if meter['rate'] > 0:
+                line += f" · {st.human_size(meter['rate'])}/s"
+                left = (size - sent) / meter['rate']
+                if 0 < left < 359999:
+                    line += f" · 剩 {_fmt_eta(left)}"
+            self._set_status(line)
 
         self.app.send_files_async(files, ip, kind="file", on_done=on_done,
                                   on_progress=on_progress)
