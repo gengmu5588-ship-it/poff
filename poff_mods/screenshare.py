@@ -19,15 +19,15 @@
 所有 UI 更新通过 root.after 回到主线程。
 """
 import io
-import json
 import os
+import queue
 import socket
+import sys
 import threading
 import time
 import tkinter as tk
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from socketserver import ThreadingMixIn
-from tkinter import ttk
+from tkinter import messagebox, ttk
 
 try:
     import cv2
@@ -49,6 +49,22 @@ except Exception:
 
 
 SHARE_HTTP_PORT = 17892
+
+if os.name == "nt":
+    import ctypes
+    from ctypes import wintypes
+
+    class MONITORINFO(ctypes.Structure):
+        """模块级定义：结构体类型必须唯一，否则 ctypes 参数类型缓存会错配。"""
+
+        _fields_ = [
+            ("cbSize", wintypes.DWORD),
+            ("rcMonitor", wintypes.RECT),
+            ("rcWork", wintypes.RECT),
+            ("dwFlags", wintypes.DWORD),
+        ]
+else:
+    MONITORINFO = None
 
 
 # ===================== A 端：共享发起 =====================
@@ -76,6 +92,8 @@ class ScreenShareModule:
         self._preview_label = None
         self._tick_job = None
         self._started_at = 0.0
+        self._frames = 0              # 已编码帧计数（排查"连上但黑屏"用）
+        self._last_err = ''
 
     def set_enabled(self, on):
         self.enabled = bool(on)
@@ -89,18 +107,32 @@ class ScreenShareModule:
 
     # ---------------- 面板 UI ----------------
     def build_panel(self, parent):
-        box = ttk.LabelFrame(parent, text="屏幕共享", padding=(12, 10))
-        box.pack(fill="x", anchor="n", padx=16, pady=12)
+        from poff import SectionCard, PAD_CARD, GAP_SEC, auto_wrap
+        card = SectionCard(parent, title="屏幕共享")
+        card.pack(fill="x", anchor="n", padx=PAD_CARD, pady=(0, GAP_SEC))
+        box = card.body
         if not (_CV2_OK and _NP_OK and _PIL_OK):
             ttk.Label(box, text="依赖缺失：opencv / numpy / Pillow 不可用，共享禁用。",
                       style="Muted.TLabel", wraplength=440).pack(anchor="w")
-            return box
+            return card
 
-        ttk.Label(box, text="A 发起屏幕共享，B 通过 KVM 会话自动接收并弹出预览窗。",
-                  style="Muted.TLabel", wraplength=440).pack(anchor="w", pady=(0, 8))
+        # 显式换行：Tk 的 wraplength 只在空格处断行，中文长句会被挤成
+        # "第一行只剩 A 发起后 B、第二行整段溢出"的怪样子。
+        hint = ttk.Label(
+            box,
+            text="A 发起 → B 自动弹出接收窗口\n"
+                 "画面经局域网直连（MJPEG），不经过任何中转服务器",
+            style="Muted.TLabel", justify="left")
+        hint.pack(anchor="w", pady=(0, 6))
+        # 把本机直连地址摆出来：B 端也可以用浏览器直接打开这个地址验证连通性
+        self.lbl_url = ttk.Label(
+            box, text=f"http://{self.app.local_ip}:{SHARE_HTTP_PORT}/screenshare",
+            style="Muted.TLabel")
+        self.lbl_url.pack(anchor="w", pady=(0, 10))
+        auto_wrap(self.lbl_url)
 
-        row = ttk.Frame(box)
-        row.pack(fill="x")
+        row = ttk.Frame(box, style="Card.TFrame")
+        row.pack(anchor="w")
         self.btn_start = ttk.Button(row, text="发起屏幕共享", style="Accent.TButton",
                                      command=self._on_start)
         self.btn_start.pack(side="left")
@@ -108,20 +140,19 @@ class ScreenShareModule:
                                     state="disabled")
         self.btn_stop.pack(side="left", padx=(8, 0))
 
-        row2 = ttk.Frame(box)
-        row2.pack(fill="x", pady=(8, 0))
-        tk.Label(row2, text="目标主机：", bg=parent.master["background"]
-                 if parent.master and "background" in parent.master.keys() else "#F2F5FA",
-                 fg="#475569", font=("Microsoft YaHei UI", 9)).pack(side="left")
+        row2 = ttk.Frame(box, style="Card.TFrame")
+        row2.pack(anchor="w", pady=(10, 0))
+        # 原来这里用 tk.Label + 从 parent.master 猜出来的底色，主题一切换
+        # 就是一块方块；改成 ttk 的 Muted 样式，底色跟随卡片。
+        ttk.Label(row2, text="目标主机：", style="Muted.TLabel").pack(side="left")
         peers = [ip for ip, _ in self.app.peer_items()]
         self.target_var = tk.StringVar(value=self.app.selected_ip() or (peers[0] if peers else ""))
         self.target_combo = ttk.Combobox(row2, values=peers, textvariable=self.target_var,
                                          width=20, state="readonly")
         self.target_combo.pack(side="left", padx=(4, 0))
         if not peers:
-            tk.Label(row2, text="（未添加主机）", bg=parent.master["background"]
-                     if parent.master else "#F2F5FA", fg="#94A3B8",
-                     font=("Microsoft YaHei UI", 8)).pack(side="left", padx=4)
+            ttk.Label(row2, text="（未添加主机）", style="Muted.TLabel").pack(
+                side="left", padx=(8, 0))
         return box
 
     def refresh_peer_list(self):
@@ -139,6 +170,18 @@ class ScreenShareModule:
             pass
 
     # ---------------- 发起 ----------------
+    @staticmethod
+    def _tcp_port():
+        try:
+            from poff import TCP_PORT
+            return TCP_PORT
+        except Exception:
+            return 17890
+
+    def _peer_port(self, ip):
+        info = getattr(self.app, "peer_list", {}).get(ip) or {}
+        return info.get("port") or self._tcp_port()
+
     def _on_start(self):
         if self._stream_thread and self._stream_thread.is_alive():
             self.app.log("已经在共享中。", "warn")
@@ -156,31 +199,64 @@ class ScreenShareModule:
         # 选目标主机
         target = self.target_var.get()
         if not target:
-            messagebox.showwarning("未选择", "请先在列表中选择目标主机。")
+            messagebox.showwarning("未选择", "请先在主机列表中选择目标主机。")
+            return
+        info = getattr(self.app, "peer_list", {}).get(target)
+        if info is None:
+            messagebox.showwarning(
+                "未选择", f"主机列表里没有 {target}，请先添加主机并做一次「连通校验」。")
+            return
+        if info.get("kind") == "mobile":
+            messagebox.showwarning(
+                "不支持", f"{target} 是手机设备，屏幕共享只在电脑主机之间进行。")
             return
 
-        # 检查 KVM 会话（需要是 ROAMING_ESTABLISHED）
-        roam = getattr(self.app, "roam", None)
-        if roam is None or not roam.is_connected(target):
-            messagebox.showwarning("KVM 未连接",
-                                   "屏幕共享需要双方 KVM 会话已建立（功能总开关里的键鼠漫游已开 + 主机已配对）。")
+        # 只要求对端 POFF 在线（17890 通），不再要求 KVM 漫游会话已建立。
+        # 旧版的 roam.is_connected() 只在「光标已经漫游到对端」时才为真，
+        # 于是绝大多数情况下点这个按钮只会静默失败（表现为"点了没反应"）。
+        port = self._peer_port(target)
+        if not self.app.tcp_hello(target, port):
+            messagebox.showwarning(
+                "主机离线",
+                f"{target} 没有响应。请先在主机列表点「连通校验」，\n"
+                "并确认对方 POFF 正在运行、防火墙已放行 17890 / 17892 端口。")
             return
 
         self._screen_index = dlg.index
         self._start_sharing()
 
-        # 通过 KVM 会话发控制码
-        try:
-            roam.send_share_start(target)
-            self.app.log(f"已通知 {target} 准备接收屏幕共享。", "ok")
-        except Exception as e:
-            self.app.log(f"发送共享通知失败：{e}", "err")
+        # 通知对方：走主 TCP 通道（17890），与是否正在漫游无关
+        url = f"http://{self.app.local_ip}:{SHARE_HTTP_PORT}/screenshare"
+        ok = self.app.send_msg_json(target, port, "SHARE",
+                                    {"type": "start", "url": url,
+                                     "ip": self.app.local_ip})
+        if ok:
+            self.app.log(f"已通知 {target} 接收屏幕共享：{url}", "ok")
+            return
+        # 兜底：主通道不通而 KVM 会话恰好已建立时，再从漫游通道发一次
+        roam = getattr(self.app, "roam", None)
+        sent = False
+        if roam is not None:
+            try:
+                sent = bool(roam.send_share_start(target))
+            except Exception as e:
+                self.app.log(f"通过 KVM 会话通知失败：{e}", "warn")
+        if sent:
+            self.app.log(f"已通过 KVM 会话通知 {target} 接收屏幕共享。", "ok")
+        else:
+            self.app.log(f"通知 {target} 失败：主通道与 KVM 会话都不可用，"
+                         f"可在对方机器上手动打开 {url}", "err")
 
     def _on_stop(self):
         target = self.target_var.get()
         self._stop_sharing()
+        if not target:
+            return
+        payload = {"type": "stop", "ip": self.app.local_ip}
+        if self.app.send_msg_json(target, self._peer_port(target), "SHARE", payload):
+            return
         roam = getattr(self.app, "roam", None)
-        if roam is not None and target:
+        if roam is not None:
             try:
                 roam.send_share_stop(target)
             except Exception:
@@ -279,14 +355,31 @@ class ScreenShareModule:
                 self.send_response(200)
                 self.end_headers()
 
-        # SO_EXCLUSIVEADDRUSE：避免多实例抢占同一端口导致分流
-        try:
-            server = ThreadingHTTPServer(("0.0.0.0", SHARE_HTTP_PORT), _Handler)
-            server.socket.setsockopt(
-                socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
-        except OSError:
-            raise
-        return server
+        # SO_EXCLUSIVEADDRUSE：避免多实例抢占同一端口导致分流。
+        # 必须在 bind 之前设置 —— ThreadingHTTPServer(...) 构造时就已 bind+listen，
+        # 构造完再 setsockopt 在 Windows 上必然抛 WSAEINVAL，原来这里是
+        # "每次发起共享都报端口被占用"的根因。
+        class _ShareServer(ThreadingHTTPServer):
+            daemon_threads = True
+            allow_reuse_address = False
+
+            def handle_error(self, request, client_address):
+                # 接收方关窗、切网、停流都会让连接中断，这是常态，
+                # 不该往 stderr 打整段 traceback（打包后没有控制台，纯噪音）。
+                exc = sys.exc_info()[1]
+                if isinstance(exc, (ConnectionError, TimeoutError)):
+                    return
+                super().handle_error(request, client_address)
+
+            def server_bind(self):
+                try:
+                    self.socket.setsockopt(
+                        socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+                except OSError:
+                    pass
+                super().server_bind()
+
+        return _ShareServer(("0.0.0.0", SHARE_HTTP_PORT), _Handler)
 
     def _stream_write_loop(self, wfile, peer):
         """单连接的 MJPEG 写入循环。
@@ -294,7 +387,6 @@ class ScreenShareModule:
         读 self._frame_queue（由 _stream_loop 填充），避免多 peer 抢同一份图片对象。
         没接收到帧时最多阻塞 2s（无观众时自动暂停抓屏）。
         """
-        import queue
         local_q = queue.Queue(maxsize=3)
         # 共享 frame_queue → 为这个 peer 建立独立消费者
         self._peer_queues.setdefault(peer, []).append(local_q)
@@ -322,7 +414,9 @@ class ScreenShareModule:
 
     # ---------------- 帧循环 ----------------
     def _stream_loop(self):
-        self._peer_queues = {}   # peer_ip → [Queue] 列表
+        # 注意：不要在这里重置 _peer_queues。HTTP 服务先起来、帧循环线程后启动，
+        # 这中间进来的观众会把队列注册进来，此处一清就永久丢帧（表现为 B 端
+        # 连上了但永远黑屏）。重置统一放在 _start_sharing 里、起线程之前。
         last_frame = None
         last_change = 0.0
         try:
@@ -338,7 +432,12 @@ class ScreenShareModule:
                 # 抓指定屏幕
                 region = get_screen_bbox(self._screen_index)
                 try:
-                    img = ImageGrab.grab(bbox=region)
+                    # all_screens=True：副屏在主屏左侧时物理坐标是负的，
+                    # 不加这个参数 PIL 只会在主屏范围内裁剪，抓到一片黑。
+                    try:
+                        img = ImageGrab.grab(bbox=region, all_screens=True)
+                    except TypeError:
+                        img = ImageGrab.grab(bbox=region)
                 except Exception:
                     time.sleep(0.06)
                     continue
@@ -364,9 +463,11 @@ class ScreenShareModule:
                     _, buf = cv2.imencode(".jpg", arr[:, :, ::-1],
                                           [int(cv2.IMWRITE_JPEG_QUALITY), quality])
                     jpeg_bytes = buf.tobytes()
-                except Exception:
+                except Exception as e:
+                    self._last_err = f'imencode: {e}'
                     time.sleep(0.06)
                     continue
+                self._frames += 1
 
                 # 投递到所有 peer queue（溢出则丢弃最旧帧）
                 for peer, qlist in list(self._peer_queues.items()):
@@ -407,7 +508,6 @@ class ScreenShareModule:
         sw = self.app.root.winfo_screenwidth()
         win.update_idletasks()
         w = win.winfo_width() or 180
-        h = win.winfo_height() or 40
         win.geometry(f"+{sw - w - 20}+88")
         self._mini_tick()
 
@@ -493,16 +593,17 @@ class ScreenReceiver:
             from urllib.parse import urlparse
             parsed = urlparse(self.url)
             host = parsed.hostname or self.peer_ip
-            port = parsed.port or 17890
+            port = parsed.port or SHARE_HTTP_PORT
             path = parsed.path or "/screenshare"
         except Exception:
-            self.app.root.after(0, lambda: self._set_status("URL 解析失败"))
+            self.app.ui_call(self._set_status, "URL 解析失败")
             return
 
         buf = b""
         frame_bytes = None
-        in_headers = True
+        sock = None
         try:
+            self.app.ui_call(self._set_status, f"连接 {host}:{port} ...")
             sock = socket.create_connection((host, port), timeout=5)
             sock.settimeout(10)
             request = (
@@ -512,7 +613,7 @@ class ScreenReceiver:
                 f"\r\n"
             ).encode()
             sock.sendall(request)
-            self.app.root.after(0, lambda: self._set_status("已连接"))
+            self.app.ui_call(self._set_status, "已连接")
 
             while not self._stop.is_set():
                 chunk = sock.recv(4096)
@@ -531,14 +632,16 @@ class ScreenReceiver:
                                 # 只保留最新一帧
                                 self._queue = [frame_bytes]
         except Exception as e:
-            self.app.root.after(0, lambda: self._set_status(f"连接断开：{e}"))
+            # sock 可能压根没建起来，直接引用会抛 NameError 把真正的错误吞掉
+            self.app.ui_call(self._set_status, f"连接断开：{e}")
         finally:
             with self._lock:
                 self._queue = []
-            try:
-                sock.close()
-            except Exception:
-                pass
+            if sock is not None:
+                try:
+                    sock.close()
+                except Exception:
+                    pass
 
     @staticmethod
     def _extract_jpeg(part):
@@ -617,19 +720,15 @@ def list_screens():
         sw = root.winfo_screenwidth()
         sh = root.winfo_screenheight()
         return [(0, 0, 0, sw, sh)]
-    import ctypes
-    from ctypes import wintypes
     user32 = ctypes.windll.user32
     MONITORINFOF_PRIMARY = 1
-
-    class MONITORINFO(ctypes.Structure):
-        _fields_ = [
-            ("cbSize", wintypes.DWORD),
-            ("rcMonitor", wintypes.RECT),
-            ("rcWork", wintypes.RECT),
-            ("dwFlags", wintypes.DWORD),
-        ]
-    MONITORINFO.cbSize = ctypes.sizeof(MONITORINFO)
+    # 结构体必须只定义一次并显式声明签名：函数内每次重建 MONITORINFO 类，
+    # ctypes 会按首次调用缓存参数类型，第二次调用传的是"另一个类"，
+    # 于是 GetMonitorInfoW 一直抛 ArgumentError（枚举结果永远为空）。
+    mi_size = ctypes.sizeof(MONITORINFO)
+    user32.GetMonitorInfoW.argtypes = [wintypes.HMONITOR,
+                                       ctypes.POINTER(MONITORINFO)]
+    user32.GetMonitorInfoW.restype = wintypes.BOOL
 
     results = []
 
@@ -638,6 +737,7 @@ def list_screens():
                        ctypes.POINTER(wintypes.RECT), wintypes.LPARAM)
     def callback(hmon, hdc, lprc, lparam):
         mi = MONITORINFO()
+        mi.cbSize = mi_size
         if user32.GetMonitorInfoW(hmon, ctypes.byref(mi)):
             m = mi.rcMonitor
             results.append((m.left, m.top, m.right, m.bottom, mi.dwFlags))

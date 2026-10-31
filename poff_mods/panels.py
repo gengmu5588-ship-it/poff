@@ -24,17 +24,20 @@ class BrightnessModule:
         self._ddc_applying = set()     # 正在后台设置的 index
 
     def build_tab(self, parent):
+        from poff import auto_wrap
         box = ttk.Frame(parent, style="Card.TFrame", padding=16)
         box.pack(fill="both", expand=True)
 
         ttk.Label(box, text="亮度控制", style="H2.TLabel").pack(anchor="w")
-        ttk.Label(box, text="支持本机笔记本内置屏（WMI）与外接显示器（DDC/CI）；"
-                            "平板亮度由平板系统自行控制。",
-                  style="Muted.TLabel", wraplength=660).pack(anchor="w", pady=(2, 14))
+        intro = ttk.Label(box, text="支持本机笔记本内置屏（WMI）与外接显示器（DDC/CI）；"
+                                    "平板亮度由平板系统自行控制。",
+                          style="Muted.TLabel")
+        intro.pack(anchor="w", pady=(2, 14))
+        auto_wrap(intro)
 
-        card = ttk.Frame(box, style="Soft.TFrame", padding=12)
-        card.pack(fill="x")
-        top = ttk.Frame(card, style="Soft.TFrame")
+        # 内置屏这一块不再套 SOFT 色块：色块里的标签各自带 CARD 底色，
+        # 浅色主题下就是灰蓝条上贴几块白补丁。滑块直接放在卡片白底上。
+        top = ttk.Frame(box, style="Card.TFrame")
         top.pack(fill="x")
         ttk.Label(top, text="本机内置屏", style="Card.TLabel").pack(side="left")
         self.lbl_value = ttk.Label(top, text="--", style="Accent.TLabel")
@@ -42,9 +45,9 @@ class BrightnessModule:
         self.lbl_state = ttk.Label(top, text="正在检测设备能力...", style="Muted.TLabel")
         self.lbl_state.pack(side="right")
 
-        self.scale = ttk.Scale(card, from_=0, to=100, orient="horizontal",
+        self.scale = ttk.Scale(box, from_=0, to=100, orient="horizontal",
                                command=self._on_move)
-        self.scale.pack(fill="x", pady=10)
+        self.scale.pack(fill="x", pady=(8, 4))
         self.scale.bind("<ButtonRelease-1>", self._on_release)
 
         ttk.Separator(box).pack(fill="x", pady=16)
@@ -60,17 +63,19 @@ class BrightnessModule:
         pad = ttk.Frame(box, style="Card.TFrame")
         pad.pack(fill="x", pady=(14, 0))
         ttk.Label(pad, text="平板无线副屏", style="Card.TLabel").pack(anchor="w")
-        row2 = ttk.Frame(pad, style="Card.TFrame")
-        row2.pack(fill="x", pady=(6, 0))
-        ttk.Scale(row2, from_=0, to=100, state="disabled").pack(
-            side="left", fill="x", expand=True)
-        ttk.Label(row2, text="平板亮度由平板系统控制（Spacedesk 无开放接口）",
-                  style="Muted.TLabel").pack(side="left", padx=8)
+        # 原来这里放了一根永远禁用的空滑块，纯装饰还占一行；说明文字本身
+        # 已经写清"平板亮度由平板系统控制"，直接把滑块去掉。
+        pad_lbl = ttk.Label(pad, text="平板亮度由平板系统控制（Spacedesk 无开放接口）",
+                            style="Muted.TLabel")
+        pad_lbl.pack(anchor="w", pady=(4, 0))
+        auto_wrap(pad_lbl)
 
-        ttk.Label(box,
-                  text="说明：外接显示器需在其 OSD 菜单中开启 DDC/CI；"
-                       "部分台式机 / 虚拟机没有可调亮度的内置屏，此时滑块会自动置灰。",
-                  style="Muted.TLabel", wraplength=660).pack(anchor="w", pady=(18, 0))
+        note = ttk.Label(box,
+                         text="说明：外接显示器需在其 OSD 菜单中开启 DDC/CI；"
+                              "部分台式机 / 虚拟机没有可调亮度的内置屏，此时滑块会自动置灰。",
+                         style="Muted.TLabel")
+        note.pack(anchor="w", pady=(18, 0))
+        auto_wrap(note)
 
         self.scale.config(state="disabled")
         self.app.root.after(120, self.detect)
@@ -202,46 +207,55 @@ class TabletModule:
         self.service = None
 
     def build_tab(self, parent):
+        from poff import auto_wrap
         box = ttk.Frame(parent, style="Card.TFrame", padding=16)
         box.pack(fill="both", expand=True)
 
         ttk.Label(box, text="平板无线副屏调度", style="H2.TLabel").pack(anchor="w")
-        ttk.Label(box,
-                  text="本程序不编码画面，仅作为 Spacedesk 的调度入口。平板端需安装 Spacedesk APP，"
-                       "建议使用 5G Wi-Fi（2.4G 延迟明显）。",
-                  style="Muted.TLabel", wraplength=660).pack(anchor="w", pady=(2, 14))
+        intro = ttk.Label(box,
+                          text="本程序不编码画面，仅作为 Spacedesk 的调度入口。平板端需安装 Spacedesk APP，"
+                               "建议使用 5G Wi-Fi（2.4G 延迟明显）。",
+                          style="Muted.TLabel")
+        intro.pack(anchor="w", pady=(2, 14))
+        auto_wrap(intro)
 
-        card = ttk.Frame(box, style="Soft.TFrame", padding=12)
-        card.pack(fill="x")
-        ttk.Label(card, text="Spacedesk 服务状态", style="Card.TLabel").pack(anchor="w")
-        self.lbl_status = ttk.Label(card, text="正在检测...", style="Muted.TLabel")
-        self.lbl_status.pack(anchor="w", pady=(6, 10))
+        # 服务状态 + 操作按钮直接排在白底上；原来的 SOFT 色块里每个标签
+        # 都带着 CARD 底色，看起来像一排没对齐的白色小方块。
+        ttk.Label(box, text="Spacedesk 服务状态", style="H3.TLabel").pack(anchor="w")
+        self.lbl_status = ttk.Label(box, text="正在检测...", style="Muted.TLabel")
+        self.lbl_status.pack(anchor="w", pady=(4, 10))
 
-        row = ttk.Frame(card, style="Soft.TFrame")
-        row.pack(fill="x")
-        b1 = ttk.Button(row, text="启动服务", command=lambda: self.control("start"))
+        row = ttk.Frame(box, style="Card.TFrame")
+        row.pack(anchor="w")
+        b1 = ttk.Button(row, text="启动服务", style="Accent.TButton",
+                        command=lambda: self.control("start"))
         b1.pack(side="left")
         b2 = ttk.Button(row, text="停止服务", command=lambda: self.control("stop"))
         b2.pack(side="left", padx=8)
         b3 = ttk.Button(row, text="刷新状态", command=self.refresh)
         b3.pack(side="left")
-        b4 = ttk.Button(row, text="打开显示设置",
-                        command=lambda: st.open_path("ms-settings:display"))
-        b4.pack(side="left", padx=8)
-        self.btns = [b1, b2, b3, b4]
 
         ttk.Separator(box).pack(fill="x", pady=16)
-        ttk.Label(box, text="使用步骤", style="H3.TLabel").pack(anchor="w")
+        head = ttk.Frame(box, style="Card.TFrame")
+        head.pack(fill="x")
+        ttk.Label(head, text="使用步骤", style="H3.TLabel").pack(side="left")
+        # 「打开显示设置」是顺手的二级入口，不跟主操作抢一行按钮位置。
+        b4 = ttk.Button(head, text="打开显示设置", style="Link.TButton",
+                        command=lambda: st.open_path("ms-settings:display"))
+        b4.pack(side="right")
+        self.btns = [b1, b2, b3, b4]
+
         steps = ("1. 在平板安装 Spacedesk Viewer APP，并与本机连接到同一局域网；\n"
                  "2. 本机安装 Spacedesk Driver（Windows 端），点击「启动服务」；\n"
                  "3. 平板上选择本机名称即可扩展为第二块屏幕；\n"
                  "4. 平板亮度与音量由平板系统自行控制（Spacedesk 无开放接口）。")
-        ttk.Label(box, text=steps, style="Muted.TLabel", justify="left").pack(
-            anchor="w", pady=(6, 0))
+        steps_lbl = ttk.Label(box, text=steps, style="Muted.TLabel", justify="left")
+        steps_lbl.pack(anchor="w", pady=(6, 0))
+        auto_wrap(steps_lbl)
 
-        self.admin_hint = ttk.Label(
-            box, text="", style="Warn.TLabel", wraplength=660)
+        self.admin_hint = ttk.Label(box, text="", style="Warn.TLabel")
         self.admin_hint.pack(anchor="w", pady=(14, 0))
+        auto_wrap(self.admin_hint)
         self._update_admin_hint()
 
         self.app.root.after(200, self.refresh)

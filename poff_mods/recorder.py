@@ -94,29 +94,33 @@ class RecorderModule:
 
     # ---------------- 面板 UI ----------------
     def build_panel(self, parent):
-        box = ttk.LabelFrame(parent, text="录屏 / 录音", padding=(12, 10))
-        box.pack(fill="x", anchor="n", padx=16, pady=12)
+        from poff import SectionCard, PAD_CARD, GAP_SEC, auto_wrap
+        card = SectionCard(parent, title="录屏 / 录音")
+        card.pack(fill="x", anchor="n", padx=PAD_CARD, pady=(0, GAP_SEC))
+        box = card.body
         if not (_CV2_OK and _NP_OK and _PIL_GRAB_OK):
             ttk.Label(box, text="依赖缺失：opencv 或 numpy 不可用，录屏功能禁用。",
                       style="Muted.TLabel", wraplength=440).pack(anchor="w")
-            return box
+            return card
 
-        ttk.Label(box, text="录屏后自动保存到本地，可单独发送视频或音频到其他主机。",
-                  style="Muted.TLabel", wraplength=440).pack(anchor="w", pady=(0, 8))
+        hint = ttk.Label(box, text="录屏后自动保存到本地，可单独发送视频或音频到其他主机。",
+                         style="Muted.TLabel")
+        hint.pack(anchor="w", pady=(0, 10))
+        auto_wrap(hint)
 
-        row1 = ttk.Frame(box)
-        row1.pack(fill="x")
+        # 三个动作一行排开，按钮直接落在卡片白底上（早先 row 用裸 ttk.Frame，
+        # 底色是页面灰，白卡片里就多出一条"按钮条"）。
+        row1 = ttk.Frame(box, style="Card.TFrame")
+        row1.pack(anchor="w")
         ttk.Button(row1, text="选区录屏", command=self._start_region_video).pack(side="left")
         ttk.Button(row1, text="全屏录屏", command=self._start_full_video).pack(side="left", padx=(8, 0))
-
-        row2 = ttk.Frame(box)
-        row2.pack(fill="x", pady=(8, 0))
-        ttk.Button(row2, text="纯录音", command=self._start_audio_only).pack(side="left")
-        if not (_SD_OK or _SC_OK):
-            ttk.Label(row2, text="（音频依赖缺失）", style="Muted.TLabel").pack(side="left", padx=8)
+        ttk.Button(row1, text="纯录音", command=self._start_audio_only).pack(side="left", padx=(8, 0))
 
         self.btn_row = row1
-        self.btn_row2 = row2
+        self.btn_row2 = None
+        if not (_SD_OK or _SC_OK):
+            ttk.Label(box, text="（音频依赖缺失：纯录音不可用）", style="Muted.TLabel").pack(
+                anchor="w", pady=(8, 0))
         return box
 
     # ---------------- 入口 ----------------
@@ -234,7 +238,6 @@ class RecorderModule:
         sw = self.app.root.winfo_screenwidth()
         win.update_idletasks()
         w = win.winfo_width() or 160
-        h = win.winfo_height() or 70
         win.geometry(f"+{sw - w - 40}+40")
 
         self._timer_tick()

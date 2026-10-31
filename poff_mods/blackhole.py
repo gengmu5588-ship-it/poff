@@ -28,6 +28,9 @@ class BlackholeModule:
         self.selected_ip = None
         self._expanded = False
         self._animating = False
+        # _pinned=True：这次展开是"程序主动叫出来"的（最小化 / 关闭 / 托盘菜单），
+        # 在鼠标进来之前不允许自动收起，否则面板弹出来 0.3 秒就又缩回边条了。
+        self._pinned = False
         self._watch_job = None
         self._drag_offset = 0
 
@@ -47,14 +50,19 @@ class BlackholeModule:
         self.var_auto = tk.BooleanVar(value=bool(self.app.cfg.get("blackhole", {}).get("auto_hide", True)))
         self.var_ignore = tk.BooleanVar(value=bool(self.app.cfg.get("blackhole", {}).get("ignore_drag", False)))
 
-        ttk.Checkbutton(opts, text="显示悬浮面板", variable=self.var_show,
-                        command=self._apply_opts).grid(row=0, column=0, sticky="w", padx=(0, 18))
-        ttk.Checkbutton(opts, text="保持置顶", variable=self.var_top,
-                        command=self._apply_opts).grid(row=0, column=1, sticky="w", padx=(0, 18))
-        ttk.Checkbutton(opts, text="鼠标移出自动收起", variable=self.var_auto,
-                        command=self._apply_opts).grid(row=1, column=0, sticky="w", pady=6)
-        ttk.Checkbutton(opts, text="忽略拖拽（防误投）", variable=self.var_ignore,
-                        command=self._apply_opts).grid(row=1, column=1, sticky="w", pady=6)
+        # 用 app 的自绘复选框：clam 原生的指示器是个"✕"，选中像禁用。
+        self.app.make_check(opts, "显示悬浮面板", self.var_show,
+                            command=self._apply_opts).grid(
+            row=0, column=0, sticky="w", padx=(0, 22), pady=(0, 4))
+        self.app.make_check(opts, "保持置顶", self.var_top,
+                            command=self._apply_opts).grid(
+            row=0, column=1, sticky="w", padx=(0, 22), pady=(0, 4))
+        self.app.make_check(opts, "鼠标移出自动收起", self.var_auto,
+                            command=self._apply_opts).grid(
+            row=1, column=0, sticky="w", padx=(0, 22), pady=4)
+        self.app.make_check(opts, "忽略拖拽（防误投）", self.var_ignore,
+                            command=self._apply_opts).grid(
+            row=1, column=1, sticky="w", padx=(0, 22), pady=4)
 
         ttk.Separator(box).pack(fill="x", pady=12)
 
@@ -115,12 +123,14 @@ class BlackholeModule:
         self.lbl_mobi_url = ttk.Label(info, text="", style="Muted.TLabel", wraplength=430)
         self.lbl_mobi_url.pack(anchor="w", pady=(2, 8))
 
-        btns = ttk.Frame(info, style="Card.TFrame")
-        btns.pack(fill="x")
+        # 三个按钮原来挤在二维码右边的窄列里，第三个「添加手机设备」会被
+        # 卡片右边缘切掉；改到整行下方，和二维码同宽排开。
+        btns = ttk.Frame(box, style="Card.TFrame")
+        btns.pack(fill="x", pady=(10, 0))
         ttk.Button(btns, text="复制链接",
                    command=self.copy_mobi_url).pack(side="left")
         ttk.Button(btns, text="重新生成配对码",
-                   command=self.regen_token).pack(side="left", padx=6)
+                   command=self.regen_token).pack(side="left", padx=8)
         ttk.Button(btns, text="添加手机设备",
                    command=self.add_mobile).pack(side="left")
 
@@ -279,11 +289,13 @@ class BlackholeModule:
         x = min(wa_right - STRIP_W, self.panel.winfo_x())
         self.panel.geometry(f"{PANEL_W}x{height}+{x}+{y}")
 
-    def expand(self):
+    def expand(self, pin=False):
         if not self.enabled or not self._alive():
             return
         if self._expanded or self._animating:
+            self._pinned = self._pinned or bool(pin)
             return
+        self._pinned = bool(pin)
         wa_right, _, _, _, _ = self._screen_geo()
         self._slide(to=wa_right - PANEL_W, expand=True)
 
@@ -294,6 +306,7 @@ class BlackholeModule:
             return
         if not self._expanded or self._animating:
             return
+        self._pinned = False
         wa_right, _, _, _, _ = self._screen_geo()
         self._slide(to=wa_right - STRIP_W, expand=False)
 
@@ -326,14 +339,14 @@ class BlackholeModule:
         if self._expanded:
             self.collapse(force=True)
         else:
-            self.expand()
+            self.expand(pin=True)
 
-    def show(self):
+    def show(self, pin=True):
         if not self.enabled:
             self.app.log("黑洞投递模块未开启，请先在功能总开关中启用", "warn")
             return
         self.ensure_panel()
-        self.expand()
+        self.expand(pin=pin)
 
     def hide_panel(self):
         """只销毁悬浮面板，不改变模块开关状态（最小化到托盘时使用）。"""
@@ -345,6 +358,7 @@ class BlackholeModule:
         self.panel = None
         self._expanded = False
         self._animating = False
+        self._pinned = False
 
     def set_enabled(self, on):
         self.enabled = bool(on)
@@ -382,9 +396,12 @@ class BlackholeModule:
             panel_h = self.panel.winfo_height()
             over = (px >= panel_x and py >= panel_y and py <= panel_y + panel_h)
             auto = self.app.cfg.get("blackhole", {}).get("auto_hide", True)
-            if over and not self._expanded:
-                self.expand()
-            elif (not over) and self._expanded and auto and not self._animating:
+            if over:
+                if not self._expanded:
+                    self.expand()
+                # 鼠标进来过一次，就交给自动收起规则了
+                self._pinned = False
+            elif (self._expanded and auto and not self._animating and not self._pinned):
                 wa_right, _, _, _, _ = self._screen_geo()
                 if px < wa_right - STRIP_W - 4:   # 鼠标已经完全离开右侧缓冲区
                     self.collapse()
@@ -417,10 +434,23 @@ class BlackholeModule:
                            fg=("#22C55E" if online else "#64748B"),
                            font=("Microsoft YaHei UI", 10))
             dot.pack(side="left", padx=(10, 4), pady=8)
-            name = tk.Label(row, text=("📱 " + ip) if is_mobi else ip,
-                            bg="#111C2E", fg="#E2E8F0",
-                            font=("Consolas", 10), anchor="w")
-            name.pack(side="left", fill="x", expand=True)
+            # 备注作主标题、IP 作副标题：多主机时一眼能分清是往哪台投
+            remark = str(info.get("name") or "").strip()
+            text_box = tk.Frame(row, bg="#111C2E")
+            text_box.pack(side="left", fill="x", expand=True)
+            if remark:
+                name = tk.Label(text_box, text=("📱 " + remark) if is_mobi else remark,
+                                bg="#111C2E", fg="#E2E8F0",
+                                font=("Microsoft YaHei UI", 9, "bold"), anchor="w")
+                name.pack(anchor="w")
+                sub = tk.Label(text_box, text=ip, bg="#111C2E", fg="#64748B",
+                               font=("Consolas", 8), anchor="w")
+                sub.pack(anchor="w")
+            else:
+                name = tk.Label(text_box, text=("📱 " + ip) if is_mobi else ip,
+                                bg="#111C2E", fg="#E2E8F0",
+                                font=("Consolas", 10), anchor="w")
+                name.pack(anchor="w", pady=(2, 0))
             hint = tk.Label(row, text=("拖入📱" if is_mobi else "拖入"),
                             bg="#111C2E", fg="#475569",
                             font=("Microsoft YaHei UI", 8))
@@ -440,6 +470,8 @@ class BlackholeModule:
                     # TkDnD 只在注册过的控件上触发 Drop；行内的主机名等
                     # 子控件会遮住 row，必须一并注册，否则拖到文字上无反应
                     targets = [row] + list(row.winfo_children())
+                    for c in list(row.winfo_children()):
+                        targets.extend(c.winfo_children())
                     for t in targets:
                         t.drop_target_register(DND_FILES)
                     row.dnd_bind("<<DropEnter>>", lambda e, r=row: self._hl(r, True))
@@ -451,17 +483,16 @@ class BlackholeModule:
                     pass
 
     def _hl(self, row, on):
+        color = "#1B2A44" if on else "#111C2E"
         try:
             row.configure(highlightbackground=("#2F6BFF" if on else "#1E293B"),
-                          highlightthickness=(2 if on else 1))
-            if on:
-                row.configure(bg="#1B2A44")
-                for c in row.winfo_children():
-                    c.configure(bg="#1B2A44")
-            else:
-                row.configure(bg="#111C2E")
-                for c in row.winfo_children():
-                    c.configure(bg="#111C2E")
+                          highlightthickness=(2 if on else 1), bg=color)
+            # 备注是「标题 + IP」两行，装在子 Frame 里，得连孙控件一起刷，
+            # 否则高亮时中间会留一块没跟着变的深色小方块。
+            for c in row.winfo_children():
+                c.configure(bg=color)
+                for gc in c.winfo_children():
+                    gc.configure(bg=color)
         except tk.TclError:
             pass
 

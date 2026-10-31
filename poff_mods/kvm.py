@@ -590,6 +590,9 @@ class RoamEngine(threading.Thread):
 class RoamModule:
     ROLE_DISPLAY = {"main": "主机（main）", "laptop": "笔记本（laptop）"}
     ROLE_BY_DISPLAY = {v: k for k, v in ROLE_DISPLAY.items()}
+    # 布局画布的逻辑坐标系，与漫游引擎判定边缘时用的坐标一致；
+    # 实际绘制时按容器宽度等比缩放，因此不要改成 1:1 像素。
+    BASE_W, BASE_H = 560, 250
 
     def __init__(self, app):
         self.app = app
@@ -615,6 +618,7 @@ class RoamModule:
         self.role_box = None
         self.target_box = None
         self.btn_refresh = None
+        self._sx = self._sy = 1.0
         self.lbl_engine = None
         self.lbl_state = None
         self.engine = None
@@ -623,6 +627,7 @@ class RoamModule:
 
     # ---------------- 界面 ----------------
     def build_tab(self, parent):
+        from poff import auto_wrap
         box = ttk.Frame(parent, style="Card.TFrame", padding=16)
         box.pack(fill="both", expand=True)
 
@@ -635,52 +640,65 @@ class RoamModule:
         self.lbl_lock.pack(side="right")
         self.update_lock_label()
 
-        ttk.Label(box,
-                  text="拖拽下方两块屏幕调整相对位置。把鼠标推到本机屏幕的对应边缘并停留片刻即进入漫游，"
-                       "键鼠将转发到目标主机；把光标移回该边缘内侧即返回本机。",
-                  style="Muted.TLabel", wraplength=660).pack(anchor="w", pady=(4, 10))
+        intro = ttk.Label(box,
+                          text="拖拽下方两块屏幕调整相对位置。把鼠标推到本机屏幕的对应边缘并停留片刻即进入漫游，"
+                               "键鼠将转发到目标主机；把光标移回该边缘内侧即返回本机。",
+                          style="Muted.TLabel")
+        intro.pack(anchor="w", pady=(4, 10))
+        auto_wrap(intro)
 
         self.canvas = tk.Canvas(box, width=560, height=250, bg="#0F172A",
                                 highlightthickness=0)
-        self.canvas.pack(anchor="w")
+        self.canvas.pack(fill="x")
+        # 画布原来写死 560×250 左对齐，右列卡片只有 ~400px 宽时，
+        # 「笔记本屏幕」那块会被卡片边缘直接切断。现在随容器宽度等比缩放，
+        # 逻辑坐标仍是 560×250（漫游引擎按它判边缘），只在绘制时换算。
+        self.canvas.bind("<Configure>", self._on_canvas_resize)
         self._draw()
 
-        # 双端双向配置行
+        # 双端双向配置：两行摆放。早先四个控件挤在一行，右列的「刷新」
+        # 被卡片边缘切掉一半，干脆按"配置 / 阈值+保存"分两行。
         row0 = ttk.Frame(box, style="Card.TFrame")
         row0.pack(fill="x", pady=(12, 0))
         ttk.Label(row0, text="本机角色：", style="Card.TLabel").pack(side="left")
-        self.role_box = ttk.Combobox(row0, width=14, state="readonly",
+        self.role_box = ttk.Combobox(row0, width=10, state="readonly",
                                      textvariable=self.role_var,
                                      values=list(self.ROLE_DISPLAY.values()))
         self.role_box.pack(side="left")
         self.role_box.bind("<<ComboboxSelected>>", lambda e: self.save(silent=True))
         ttk.Label(row0, text="漫游目标：", style="Card.TLabel").pack(
             side="left", padx=(16, 0))
-        self.target_box = ttk.Combobox(row0, width=18, state="readonly",
+        self.target_box = ttk.Combobox(row0, width=13, state="readonly",
                                        textvariable=self.target_var, values=[])
         self.target_box.pack(side="left")
         self.target_box.bind("<<ComboboxSelected>>", lambda e: self.save(silent=True))
-        self.btn_refresh = ttk.Button(row0, text="刷新", width=6,
-                                      command=self.refresh_targets)
-        self.btn_refresh.pack(side="left", padx=6)
 
         row = ttk.Frame(box, style="Card.TFrame")
-        row.pack(fill="x", pady=12)
+        row.pack(fill="x", pady=(8, 0))
         ttk.Label(row, text="光标停靠边距：", style="Card.TLabel").pack(side="left")
-        self.spin = ttk.Spinbox(row, from_=5, to=120, width=6,
+        self.spin = ttk.Spinbox(row, from_=5, to=120, width=5,
                                 textvariable=self.threshold_var)
         self.spin.pack(side="left")
-        ttk.Label(row, text="px", style="Muted.TLabel").pack(side="left", padx=(4, 16))
-        ttk.Label(row, text="漫游锁定热键：Ctrl+Shift+L", style="Muted.TLabel").pack(side="left")
+        ttk.Label(row, text="px", style="Muted.TLabel").pack(side="left", padx=(4, 0))
+        # 热键提示原来跟这行挤在一起，把「保存布局」挤到卡片外只露半个字，
+        # 现在挪到下面的状态行（和引擎状态同一行右侧）。
         self.btn_save = ttk.Button(row, text="保存布局", command=self.save)
         self.btn_save.pack(side="right")
+        self.btn_refresh = ttk.Button(row, text="刷新", width=5,
+                                      command=self.refresh_targets)
+        self.btn_refresh.pack(side="right", padx=(0, 8))
 
-        stat = ttk.Frame(box, style="Soft.TFrame", padding=10)
+        # 状态行不再套 SOFT 色块：块里的 Card/Muted 标签自带白底，
+        # 浅色主题下就是灰蓝条上贴两块白补丁。改用一条分隔线分组。
+        ttk.Separator(box).pack(fill="x", pady=(12, 10))
+        stat = ttk.Frame(box, style="Card.TFrame")
         stat.pack(fill="x", pady=(0, 10))
-        self.lbl_engine = ttk.Label(stat, text="引擎状态：未启动", style="Card.TLabel")
+        self.lbl_engine = ttk.Label(stat, text="引擎状态：未启动", style="Muted.TLabel")
         self.lbl_engine.pack(side="left")
         self.lbl_state = ttk.Label(stat, text="当前：本机", style="Muted.TLabel")
         self.lbl_state.pack(side="right")
+        ttk.Label(stat, text="锁定热键 Ctrl+Shift+L", style="Muted.TLabel").pack(
+            side="right", padx=(0, 16))
 
         ttk.Label(box,
                   text="双端双向：两台主机都打开漫游开关并各自完成配置（本机角色与布局互为镜像）后，"
@@ -693,27 +711,49 @@ class RoamModule:
         self.refresh_targets()
         self._poll_status()
 
+    def _on_canvas_resize(self, event):
+        '''容器尺寸变化时重画（去抖，避免拖窗口时每像素重绘）。'''
+
+        if (abs(event.width - getattr(self, "_cw", 0)) < 2
+                and abs(event.height - getattr(self, "_ch", 0)) < 2):
+            return
+        self._cw, self._ch = event.width, event.height
+        job = getattr(self, "_resize_job", None)
+        if job:
+            try:
+                self.canvas.after_cancel(job)
+            except (tk.TclError, ValueError):
+                pass
+        self._resize_job = self.canvas.after(30, self._draw)
+
     def _draw(self):
         c = self.canvas
         c.delete("all")
-        for x in range(0, 561, 40):
-            c.create_line(x, 0, x, 250, fill="#16233A")
-        for y in range(0, 251, 40):
-            c.create_line(0, y, 560, y, fill="#16233A")
-        c.create_text(280, 20, text="屏幕布局（拖拽调整）", fill="#64748B",
+        w, h = c.winfo_width(), c.winfo_height()
+        if w < 80 or h < 60:            # 还没完成布局
+            w, h = self.BASE_W, self.BASE_H
+        sx, sy = w / self.BASE_W, h / self.BASE_H
+        self._sx, self._sy = sx, sy
+        for x in range(0, self.BASE_W + 1, 40):
+            c.create_line(x * sx, 0, x * sx, h, fill="#16233A")
+        for y in range(0, self.BASE_H + 1, 40):
+            c.create_line(0, y * sy, w, y * sy, fill="#16233A")
+        c.create_text(w / 2, 20 * sy, text="屏幕布局（拖拽调整）", fill="#64748B",
                       font=("Microsoft YaHei UI", 9))
 
         colors = {"main": ("#1D4ED8", "#93C5FD", "主机屏幕"),
                   "laptop": ("#047857", "#6EE7B7", "笔记本屏幕")}
         self.items = {}
         for key, rect in self.layout.items():
-            x, y, w, h = rect
+            x, y, rw, rh = rect
+            x0, y0 = x * sx, y * sy
+            x1, y1 = (x + rw) * sx, (y + rh) * sy
             fill, outline, label = colors[key]
             rect_tag = f"rect_{key}"
             text_tag = f"text_{key}"
-            c.create_rectangle(x, y, x + w, y + h, fill=fill, outline=outline,
+            c.create_rectangle(x0, y0, x1, y1, fill=fill, outline=outline,
                                width=2, tags=(rect_tag,))
-            c.create_text(x + w / 2, y + h / 2, text=label, fill="#FFFFFF",
+            c.create_text((x0 + x1) / 2, (y0 + y1) / 2, text=label, fill="#FFFFFF",
                           font=("Microsoft YaHei UI", 10, "bold"), tags=(text_tag,))
             for tag in (rect_tag, text_tag):
                 c.tag_bind(tag, "<ButtonPress-1>", lambda e, k=key: self._press(e, k))
@@ -726,18 +766,21 @@ class RoamModule:
         if not self.enabled:
             return
         x, y, w, h = self.layout[key]
-        self._drag = {"key": key, "dx": event.x - x, "dy": event.y - y}
+        self._drag = {"key": key,
+                      "dx": event.x / self._sx - x,
+                      "dy": event.y / self._sy - y}
 
     def _move(self, event):
         if not self._drag:
             return
         key = self._drag["key"]
         x, y, w, h = self.layout[key]
-        nx = max(0, min(560 - w, event.x - self._drag["dx"]))
-        ny = max(0, min(250 - h, event.y - self._drag["dy"]))
+        nx = max(0, min(self.BASE_W - w, event.x / self._sx - self._drag["dx"]))
+        ny = max(0, min(self.BASE_H - h, event.y / self._sy - self._drag["dy"]))
         self.layout[key] = [nx, ny, w, h]
-        self.canvas.coords(f"rect_{key}", nx, ny, nx + w, ny + h)
-        self.canvas.coords(f"text_{key}", nx + w / 2, ny + h / 2)
+        sx, sy = self._sx, self._sy
+        self.canvas.coords(f"rect_{key}", nx * sx, ny * sy, (nx + w) * sx, (ny + h) * sy)
+        self.canvas.coords(f"text_{key}", (nx + w / 2) * sx, (ny + h / 2) * sy)
 
     # ---------------- 目标主机 ----------------
     def refresh_targets(self):
@@ -894,7 +937,7 @@ class RoamModule:
             return False
         return eng.send_ctrl(payload)
 
-    def send_share_start(self, _target, http_port=17892):
+    def send_share_start(self, _target):
         """通知 B 端接收屏幕共享（B 会自动创建接收窗口）。"""
         from .screenshare import SHARE_HTTP_PORT
         url = f"http://{self.app.local_ip}:{SHARE_HTTP_PORT}/screenshare"

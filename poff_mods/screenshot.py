@@ -19,12 +19,12 @@ try:
 except Exception:
     _PIL_OK = False
 
-BG = "#F2F5FA"
-CARD = "#FFFFFF"
-TEXT = "#1B2434"
-MUTED = "#6B7789"
-ACCENT = "#2F6BFF"
-ERR = "#DC2626"
+BG = "#0B1120"
+CARD = "#141B2D"
+TEXT = "#E6EBF5"
+MUTED = "#8894A9"
+ACCENT = "#3B82F6"
+ERR = "#EF4444"
 
 
 class ScreenshotModule:
@@ -55,15 +55,18 @@ class ScreenshotModule:
         self.buttons = [b1, b2]
 
         dir_row = ttk.Frame(box, style="Card.TFrame")
-        dir_row.pack(fill="x", pady=(14, 4))
-        ttk.Label(dir_row, text="截图保存目录：", style="Card.TLabel").pack(side="left")
-        self.lbl_dir = ttk.Label(dir_row, text=self.app.screenshot_dir,
-                                 style="Muted.TLabel")
-        self.lbl_dir.pack(side="left")
+        dir_row.pack(fill="x", pady=(14, 0))
+        # 先 pack 右边的两个按钮，再放标题：否则路径一长，
+        # 「更改目录」会被挤到卡片外面只露出半个字。
         ttk.Button(dir_row, text="打开目录",
                    command=lambda: self.app.open_path(self.app.screenshot_dir)).pack(
-            side="right", padx=4)
+            side="right", padx=(4, 0))
         ttk.Button(dir_row, text="更改目录", command=self.change_dir).pack(side="right")
+        ttk.Label(dir_row, text="截图保存目录", style="Muted.TLabel").pack(side="left")
+        # 路径单独占一行（跟着容器宽度换行），不和按钮抢同一行的宽度。
+        self.lbl_dir = ttk.Label(box, text=self.app.screenshot_dir,
+                                 style="Card.TLabel", wraplength=400)
+        self.lbl_dir.pack(anchor="w", pady=(4, 0))
 
         ttk.Separator(box).pack(fill="x", pady=14)
         ttk.Label(box, text="最近一张截图", style="H3.TLabel").pack(anchor="w")
@@ -349,7 +352,7 @@ class ScreenshotModule:
 
         ttk.Label(win, text=f"已保存：{path}", style="Muted.TLabel",
                   wraplength=900).pack(anchor="w", padx=14)
-        bar = ttk.Frame(win)
+        bar = ttk.Frame(win, style="Bg.TFrame")
         bar.pack(fill="x", padx=12, pady=10)
         ttk.Button(bar, text="打开所在文件夹",
                    command=lambda: self.app.open_path(os.path.dirname(path))).pack(side="left")
